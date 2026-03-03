@@ -451,6 +451,21 @@ async fn render_metrics(stats: &Stats, config: &ProxyConfig, ip_tracker: &UserIp
 
     let _ = writeln!(
         out,
+        "# HELP telemt_me_kdf_port_only_drift_total ME KDF client-port changes with stable non-port material"
+    );
+    let _ = writeln!(out, "# TYPE telemt_me_kdf_port_only_drift_total counter");
+    let _ = writeln!(
+        out,
+        "telemt_me_kdf_port_only_drift_total {}",
+        if me_allows_debug {
+            stats.get_me_kdf_port_only_drift_total()
+        } else {
+            0
+        }
+    );
+
+    let _ = writeln!(
+        out,
         "# HELP telemt_me_hardswap_pending_reuse_total Hardswap cycles that reused an existing pending generation"
     );
     let _ = writeln!(out, "# TYPE telemt_me_hardswap_pending_reuse_total counter");
@@ -587,6 +602,24 @@ async fn render_metrics(stats: &Stats, config: &ProxyConfig, ip_tracker: &UserIp
         }
     );
 
+    let _ = writeln!(
+        out,
+        "# HELP telemt_me_single_endpoint_shadow_rotate_skipped_quarantine_total Shadow rotations skipped because endpoint is quarantined"
+    );
+    let _ = writeln!(
+        out,
+        "# TYPE telemt_me_single_endpoint_shadow_rotate_skipped_quarantine_total counter"
+    );
+    let _ = writeln!(
+        out,
+        "telemt_me_single_endpoint_shadow_rotate_skipped_quarantine_total {}",
+        if me_allows_normal {
+            stats.get_me_single_endpoint_shadow_rotate_skipped_quarantine_total()
+        } else {
+            0
+        }
+    );
+
     let _ = writeln!(out, "# HELP telemt_secure_padding_invalid_total Invalid secure frame lengths");
     let _ = writeln!(out, "# TYPE telemt_secure_padding_invalid_total counter");
     let _ = writeln!(
@@ -679,7 +712,7 @@ async fn render_metrics(stats: &Stats, config: &ProxyConfig, ip_tracker: &UserIp
     let _ = writeln!(
         out,
         "telemt_pool_swap_total {}",
-        if me_allows_debug {
+        if me_allows_normal {
             stats.get_pool_swap_total()
         } else {
             0
