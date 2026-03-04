@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +43,8 @@ pub(super) struct ApiShared {
     pub(super) ip_tracker: Arc<UserIpTracker>,
     pub(super) me_pool: Option<Arc<MePool>>,
     pub(super) config_path: PathBuf,
+    pub(super) startup_detected_ip_v4: Option<IpAddr>,
+    pub(super) startup_detected_ip_v6: Option<IpAddr>,
     pub(super) mutation_lock: Arc<Mutex<()>>,
     pub(super) minimal_cache: Arc<Mutex<Option<MinimalCacheEntry>>>,
     pub(super) request_id: Arc<AtomicU64>,
@@ -61,6 +63,8 @@ pub async fn serve(
     me_pool: Option<Arc<MePool>>,
     config_rx: watch::Receiver<Arc<ProxyConfig>>,
     config_path: PathBuf,
+    startup_detected_ip_v4: Option<IpAddr>,
+    startup_detected_ip_v6: Option<IpAddr>,
 ) {
     let listener = match TcpListener::bind(listen).await {
         Ok(listener) => listener,
@@ -81,6 +85,8 @@ pub async fn serve(
         ip_tracker,
         me_pool,
         config_path,
+        startup_detected_ip_v4,
+        startup_detected_ip_v6,
         mutation_lock: Arc::new(Mutex::new(())),
         minimal_cache: Arc::new(Mutex::new(None)),
         request_id: Arc::new(AtomicU64::new(1)),
@@ -212,7 +218,14 @@ async fn handle(
             }
             ("GET", "/v1/stats/users") | ("GET", "/v1/users") => {
                 let revision = current_revision(&shared.config_path).await?;
-                let users = users_from_config(&cfg, &shared.stats, &shared.ip_tracker).await;
+                let users = users_from_config(
+                    &cfg,
+                    &shared.stats,
+                    &shared.ip_tracker,
+                    shared.startup_detected_ip_v4,
+                    shared.startup_detected_ip_v6,
+                )
+                .await;
                 Ok(success_response(StatusCode::OK, users, revision))
             }
             ("POST", "/v1/users") => {
@@ -238,7 +251,14 @@ async fn handle(
                 {
                     if method == Method::GET {
                         let revision = current_revision(&shared.config_path).await?;
-                        let users = users_from_config(&cfg, &shared.stats, &shared.ip_tracker).await;
+                        let users = users_from_config(
+                            &cfg,
+                            &shared.stats,
+                            &shared.ip_tracker,
+                            shared.startup_detected_ip_v4,
+                            shared.startup_detected_ip_v6,
+                        )
+                        .await;
                         if let Some(user_info) = users.into_iter().find(|entry| entry.username == user)
                         {
                             return Ok(success_response(StatusCode::OK, user_info, revision));
