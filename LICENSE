@@ -12,35 +12,57 @@ are preserved and complied with.
 ### Official Translations
 
 The canonical version of this License is the English version.
-
 Official translations are provided for informational purposes only
 and for convenience, and do not have legal force. In case of any
 discrepancy, the English version of this License shall prevail.
-
 Available versions:
 - English in Markdown: docs/LICENSE/LICENSE.md
 - German: docs/LICENSE/LICENSE.de.md
 - Russian: docs/LICENSE/LICENSE.ru.md
 
+### License Versioning Policy
+
+This License is version 3 of the TELEMT Public License.
+Each version of the Software is licensed under the License that
+accompanies its corresponding source code distribution.
+
+Future versions of the Software may be distributed under a different
+version of the TELEMT Public License or under a different license,
+as determined by the Telemt maintainers.
+
+Any such change of license applies only to the versions of the
+Software distributed with the new license and SHALL NOT retroactively
+affect any previously released versions of the Software.
+
+Recipients of the Software are granted rights only under the License
+provided with the version of the Software they received.
+
+Redistributions of the Software, including Modified Versions, MUST
+preserve the copyright notices, license text, and conditions of this
+License for all portions of the Software derived from Telemt.
+
+Additional terms or licenses may be applied to modifications or
+additional code added by a redistributor, provided that such terms
+do not restrict or alter the rights granted under this License for
+the original Telemt Software.
+
+Nothing in this section limits the rights granted under this License
+for versions of the Software already released.
+
 ### Definitions
 
 For the purposes of this License:
-
-"Software" means the Telemt software, including source code, documentation,
+- "Software" means the Telemt software, including source code, documentation,
 and any associated files distributed under this License.
-
-"Contributor" means any person or entity that submits code, patches,
+- "Contributor" means any person or entity that submits code, patches,
 documentation, or other contributions to the Software that are accepted
 into the Software by the maintainers.
-
-"Contribution" means any work of authorship intentionally submitted
+- "Contribution" means any work of authorship intentionally submitted
 to the Software for inclusion in the Software.
-
-"Modified Version" means any version of the Software that has been
+- "Modified Version" means any version of the Software that has been
 changed, adapted, extended, or otherwise modified from the original
 Software.
-
-"Maintainers" means the individuals or entities responsible for
+- "Maintainers" means the individuals or entities responsible for
 the official Telemt project and its releases.
 
 #### 1 Attribution
