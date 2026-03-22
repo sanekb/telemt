@@ -28,9 +28,23 @@ RUN cargo build --release && strip target/release/telemt
 FROM debian:12-slim AS minimal
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    upx \
     binutils \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    \
+    # install UPX from Telemt releases
+    && curl -fL \
+        --retry 5 \
+        --retry-delay 3 \
+        --connect-timeout 10 \
+        --max-time 120 \
+        -o /tmp/upx.tar.xz \
+        https://github.com/telemt/telemt/releases/download/toolchains/upx-amd64_linux.tar.xz \
+    && tar -xf /tmp/upx.tar.xz -C /tmp \
+    && mv /tmp/upx*/upx /usr/local/bin/upx \
+    && chmod +x /usr/local/bin/upx \
+    && rm -rf /tmp/upx*
 
 COPY --from=builder /build/target/release/telemt /telemt
 
