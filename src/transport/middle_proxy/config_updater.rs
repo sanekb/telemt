@@ -314,53 +314,6 @@ async fn run_update_cycle(
     reinit_tx: &mpsc::Sender<MeReinitTrigger>,
 ) {
     let upstream = pool.upstream.clone();
-    pool.update_runtime_reinit_policy(
-        cfg.general.hardswap,
-        cfg.general.me_pool_drain_ttl_secs,
-        cfg.general.me_instadrain,
-        cfg.general.me_pool_drain_threshold,
-        cfg.general.me_pool_drain_soft_evict_enabled,
-        cfg.general.me_pool_drain_soft_evict_grace_secs,
-        cfg.general.me_pool_drain_soft_evict_per_writer,
-        cfg.general.me_pool_drain_soft_evict_budget_per_core,
-        cfg.general.me_pool_drain_soft_evict_cooldown_ms,
-        cfg.general.effective_me_pool_force_close_secs(),
-        cfg.general.me_pool_min_fresh_ratio,
-        cfg.general.me_hardswap_warmup_delay_min_ms,
-        cfg.general.me_hardswap_warmup_delay_max_ms,
-        cfg.general.me_hardswap_warmup_extra_passes,
-        cfg.general.me_hardswap_warmup_pass_backoff_base_ms,
-        cfg.general.me_bind_stale_mode,
-        cfg.general.me_bind_stale_ttl_secs,
-        cfg.general.me_secret_atomic_snapshot,
-        cfg.general.me_deterministic_writer_sort,
-        cfg.general.me_writer_pick_mode,
-        cfg.general.me_writer_pick_sample_size,
-        cfg.general.me_single_endpoint_shadow_writers,
-        cfg.general.me_single_endpoint_outage_mode_enabled,
-        cfg.general.me_single_endpoint_outage_disable_quarantine,
-        cfg.general.me_single_endpoint_outage_backoff_min_ms,
-        cfg.general.me_single_endpoint_outage_backoff_max_ms,
-        cfg.general.me_single_endpoint_shadow_rotate_every_secs,
-        cfg.general.me_floor_mode,
-        cfg.general.me_adaptive_floor_idle_secs,
-        cfg.general.me_adaptive_floor_min_writers_single_endpoint,
-        cfg.general.me_adaptive_floor_min_writers_multi_endpoint,
-        cfg.general.me_adaptive_floor_recover_grace_secs,
-        cfg.general.me_adaptive_floor_writers_per_core_total,
-        cfg.general.me_adaptive_floor_cpu_cores_override,
-        cfg.general
-            .me_adaptive_floor_max_extra_writers_single_per_core,
-        cfg.general
-            .me_adaptive_floor_max_extra_writers_multi_per_core,
-        cfg.general.me_adaptive_floor_max_active_writers_per_core,
-        cfg.general.me_adaptive_floor_max_warm_writers_per_core,
-        cfg.general.me_adaptive_floor_max_active_writers_global,
-        cfg.general.me_adaptive_floor_max_warm_writers_global,
-        cfg.general.me_health_interval_ms_unhealthy,
-        cfg.general.me_health_interval_ms_healthy,
-        cfg.general.me_warn_rate_limit_ms,
-    );
 
     let required_cfg_snapshots = cfg.general.me_config_stable_snapshots.max(1);
     let required_secret_snapshots = cfg.general.proxy_secret_stable_snapshots.max(1);

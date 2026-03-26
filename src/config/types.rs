@@ -429,6 +429,11 @@ pub struct GeneralConfig {
     #[serde(default = "default_me2dc_fallback")]
     pub me2dc_fallback: bool,
 
+    /// Fast ME->Direct fallback mode for new sessions.
+    /// Active only when both `use_middle_proxy=true` and `me2dc_fallback=true`.
+    #[serde(default = "default_me2dc_fast")]
+    pub me2dc_fast: bool,
+
     /// Enable ME keepalive padding frames.
     #[serde(default = "default_true")]
     pub me_keepalive_enabled: bool,
@@ -939,6 +944,7 @@ impl Default for GeneralConfig {
             middle_proxy_warm_standby: default_middle_proxy_warm_standby(),
             me_init_retry_attempts: default_me_init_retry_attempts(),
             me2dc_fallback: default_me2dc_fallback(),
+            me2dc_fast: default_me2dc_fast(),
             me_keepalive_enabled: default_true(),
             me_keepalive_interval_secs: default_keepalive_interval(),
             me_keepalive_jitter_secs: default_keepalive_jitter(),

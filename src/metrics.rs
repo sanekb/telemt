@@ -1558,6 +1558,40 @@ async fn render_metrics(stats: &Stats, config: &ProxyConfig, ip_tracker: &UserIp
             0
         }
     );
+    let _ = writeln!(
+        out,
+        "# HELP telemt_me_endpoint_quarantine_unexpected_total ME endpoint quarantines caused by unexpected writer removals"
+    );
+    let _ = writeln!(
+        out,
+        "# TYPE telemt_me_endpoint_quarantine_unexpected_total counter"
+    );
+    let _ = writeln!(
+        out,
+        "telemt_me_endpoint_quarantine_unexpected_total {}",
+        if me_allows_normal {
+            stats.get_me_endpoint_quarantine_unexpected_total()
+        } else {
+            0
+        }
+    );
+    let _ = writeln!(
+        out,
+        "# HELP telemt_me_endpoint_quarantine_draining_suppressed_total Draining writer removals that skipped endpoint quarantine"
+    );
+    let _ = writeln!(
+        out,
+        "# TYPE telemt_me_endpoint_quarantine_draining_suppressed_total counter"
+    );
+    let _ = writeln!(
+        out,
+        "telemt_me_endpoint_quarantine_draining_suppressed_total {}",
+        if me_allows_normal {
+            stats.get_me_endpoint_quarantine_draining_suppressed_total()
+        } else {
+            0
+        }
+    );
 
     let _ = writeln!(
         out,
@@ -2320,6 +2354,20 @@ async fn render_metrics(stats: &Stats, config: &ProxyConfig, ip_tracker: &UserIp
     );
     let _ = writeln!(
         out,
+        "# HELP telemt_me_hybrid_timeout_total ME hybrid route timeouts after bounded retry window"
+    );
+    let _ = writeln!(out, "# TYPE telemt_me_hybrid_timeout_total counter");
+    let _ = writeln!(
+        out,
+        "telemt_me_hybrid_timeout_total {}",
+        if me_allows_normal {
+            stats.get_me_hybrid_timeout_total()
+        } else {
+            0
+        }
+    );
+    let _ = writeln!(
+        out,
         "# HELP telemt_me_async_recovery_trigger_total Async ME recovery trigger attempts from route path"
     );
     let _ = writeln!(out, "# TYPE telemt_me_async_recovery_trigger_total counter");
@@ -2608,6 +2656,9 @@ mod tests {
         stats.increment_me_d2c_write_mode(crate::stats::MeD2cWriteMode::Coalesced);
         stats.increment_me_d2c_quota_reject_total(crate::stats::MeD2cQuotaRejectStage::PostWrite);
         stats.observe_me_d2c_frame_buf_shrink(4096);
+        stats.increment_me_endpoint_quarantine_total();
+        stats.increment_me_endpoint_quarantine_unexpected_total();
+        stats.increment_me_endpoint_quarantine_draining_suppressed_total();
         stats.increment_user_connects("alice");
         stats.increment_user_curr_connects("alice");
         stats.add_user_octets_from("alice", 1024);
@@ -2658,6 +2709,9 @@ mod tests {
         assert!(output.contains("telemt_me_d2c_quota_reject_total{stage=\"post_write\"} 1"));
         assert!(output.contains("telemt_me_d2c_frame_buf_shrink_total 1"));
         assert!(output.contains("telemt_me_d2c_frame_buf_shrink_bytes_total 4096"));
+        assert!(output.contains("telemt_me_endpoint_quarantine_total 1"));
+        assert!(output.contains("telemt_me_endpoint_quarantine_unexpected_total 1"));
+        assert!(output.contains("telemt_me_endpoint_quarantine_draining_suppressed_total 1"));
         assert!(output.contains("telemt_user_connections_total{user=\"alice\"} 1"));
         assert!(output.contains("telemt_user_connections_current{user=\"alice\"} 1"));
         assert!(output.contains("telemt_user_octets_from_client{user=\"alice\"} 1024"));
@@ -2724,6 +2778,12 @@ mod tests {
         assert!(output.contains("# TYPE telemt_me_d2c_write_mode_total counter"));
         assert!(output.contains("# TYPE telemt_me_d2c_batch_frames_bucket_total counter"));
         assert!(output.contains("# TYPE telemt_me_d2c_flush_duration_us_bucket_total counter"));
+        assert!(output.contains("# TYPE telemt_me_endpoint_quarantine_total counter"));
+        assert!(output.contains("# TYPE telemt_me_endpoint_quarantine_unexpected_total counter"));
+        assert!(
+            output
+                .contains("# TYPE telemt_me_endpoint_quarantine_draining_suppressed_total counter")
+        );
         assert!(output.contains("# TYPE telemt_me_writer_removed_total counter"));
         assert!(
             output

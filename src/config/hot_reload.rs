@@ -651,6 +651,9 @@ fn warn_non_hot_changes(old: &ProxyConfig, new: &ProxyConfig, non_hot_changed: b
     }
     if old.general.me_route_no_writer_mode != new.general.me_route_no_writer_mode
         || old.general.me_route_no_writer_wait_ms != new.general.me_route_no_writer_wait_ms
+        || old.general.me_route_hybrid_max_wait_ms != new.general.me_route_hybrid_max_wait_ms
+        || old.general.me_route_blocking_send_timeout_ms
+            != new.general.me_route_blocking_send_timeout_ms
         || old.general.me_route_inline_recovery_attempts
             != new.general.me_route_inline_recovery_attempts
         || old.general.me_route_inline_recovery_wait_ms
@@ -669,9 +672,11 @@ fn warn_non_hot_changes(old: &ProxyConfig, new: &ProxyConfig, non_hot_changed: b
         warned = true;
         warn!("config reload: general.me_init_retry_attempts changed; restart required");
     }
-    if old.general.me2dc_fallback != new.general.me2dc_fallback {
+    if old.general.me2dc_fallback != new.general.me2dc_fallback
+        || old.general.me2dc_fast != new.general.me2dc_fast
+    {
         warned = true;
-        warn!("config reload: general.me2dc_fallback changed; restart required");
+        warn!("config reload: general.me2dc_fallback/me2dc_fast changed; restart required");
     }
     if old.general.proxy_config_v4_cache_path != new.general.proxy_config_v4_cache_path
         || old.general.proxy_config_v6_cache_path != new.general.proxy_config_v6_cache_path

@@ -1217,6 +1217,7 @@ mod tests {
             default_me_init_retry_attempts()
         );
         assert_eq!(cfg.general.me2dc_fallback, default_me2dc_fallback());
+        assert_eq!(cfg.general.me2dc_fast, default_me2dc_fast());
         assert_eq!(
             cfg.general.proxy_config_v4_cache_path,
             default_proxy_config_v4_cache_path()
@@ -1356,6 +1357,7 @@ mod tests {
             default_me_init_retry_attempts()
         );
         assert_eq!(general.me2dc_fallback, default_me2dc_fallback());
+        assert_eq!(general.me2dc_fast, default_me2dc_fast());
         assert_eq!(
             general.proxy_config_v4_cache_path,
             default_proxy_config_v4_cache_path()

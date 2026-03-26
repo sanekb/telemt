@@ -244,10 +244,9 @@ fn order_profiles(
         if let Some(pos) = ordered
             .iter()
             .position(|profile| *profile == cached.profile)
+            && pos != 0
         {
-            if pos != 0 {
-                ordered.swap(0, pos);
-            }
+            ordered.swap(0, pos);
         }
     }
 
