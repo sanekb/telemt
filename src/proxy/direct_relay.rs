@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf, split};
 use tokio::sync::watch;
@@ -16,10 +17,12 @@ use crate::crypto::SecureRandom;
 use crate::error::{ProxyError, Result};
 use crate::protocol::constants::*;
 use crate::proxy::handshake::{HandshakeSuccess, encrypt_tg_nonce_with_ciphers, generate_tg_nonce};
-use crate::proxy::relay::relay_bidirectional;
 use crate::proxy::route_mode::{
     ROUTE_SWITCH_ERROR_MSG, RelayRouteMode, RouteCutoverState, affected_cutover_state,
     cutover_stagger_delay,
+};
+use crate::proxy::shared_state::{
+    ConntrackCloseEvent, ConntrackClosePublishResult, ConntrackCloseReason, ProxySharedState,
 };
 use crate::stats::Stats;
 use crate::stream::{BufferPool, CryptoReader, CryptoWriter};
@@ -225,7 +228,43 @@ fn unknown_dc_test_lock() -> &'static Mutex<()> {
     TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn handle_via_direct<R, W>(
+    client_reader: CryptoReader<R>,
+    client_writer: CryptoWriter<W>,
+    success: HandshakeSuccess,
+    upstream_manager: Arc<UpstreamManager>,
+    stats: Arc<Stats>,
+    config: Arc<ProxyConfig>,
+    buffer_pool: Arc<BufferPool>,
+    rng: Arc<SecureRandom>,
+    route_rx: watch::Receiver<RouteCutoverState>,
+    route_snapshot: RouteCutoverState,
+    session_id: u64,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    handle_via_direct_with_shared(
+        client_reader,
+        client_writer,
+        success,
+        upstream_manager,
+        stats,
+        config.clone(),
+        buffer_pool,
+        rng,
+        route_rx,
+        route_snapshot,
+        session_id,
+        SocketAddr::from(([0, 0, 0, 0], config.server.port)),
+        ProxySharedState::new(),
+    )
+    .await
+}
+
+pub(crate) async fn handle_via_direct_with_shared<R, W>(
     client_reader: CryptoReader<R>,
     client_writer: CryptoWriter<W>,
     success: HandshakeSuccess,
@@ -237,6 +276,8 @@ pub(crate) async fn handle_via_direct<R, W>(
     mut route_rx: watch::Receiver<RouteCutoverState>,
     route_snapshot: RouteCutoverState,
     session_id: u64,
+    local_addr: SocketAddr,
+    shared: Arc<ProxySharedState>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -276,7 +317,19 @@ where
     stats.increment_user_connects(user);
     let _direct_connection_lease = stats.acquire_direct_connection_lease();
 
-    let relay_result = relay_bidirectional(
+    let buffer_pool_trim = Arc::clone(&buffer_pool);
+    let relay_activity_timeout = if shared.conntrack_pressure_active() {
+        Duration::from_secs(
+            config
+                .server
+                .conntrack_control
+                .profile
+                .direct_activity_timeout_secs(),
+        )
+    } else {
+        Duration::from_secs(1800)
+    };
+    let relay_result = crate::proxy::relay::relay_bidirectional_with_activity_timeout(
         client_reader,
         client_writer,
         tg_reader,
@@ -287,6 +340,7 @@ where
         Arc::clone(&stats),
         config.access.user_data_quota.get(user).copied(),
         buffer_pool,
+        relay_activity_timeout,
     );
     tokio::pin!(relay_result);
     let relay_result = loop {
@@ -321,7 +375,57 @@ where
         Err(e) => debug!(user = %user, error = %e, "Direct relay ended with error"),
     }
 
+    buffer_pool_trim.trim_to(buffer_pool_trim.max_buffers().min(64));
+    let pool_snapshot = buffer_pool_trim.stats();
+    stats.set_buffer_pool_gauges(
+        pool_snapshot.pooled,
+        pool_snapshot.allocated,
+        pool_snapshot.allocated.saturating_sub(pool_snapshot.pooled),
+    );
+
+    let close_reason = classify_conntrack_close_reason(&relay_result);
+    let publish_result = shared.publish_conntrack_close_event(ConntrackCloseEvent {
+        src: success.peer,
+        dst: local_addr,
+        reason: close_reason,
+    });
+    if !matches!(
+        publish_result,
+        ConntrackClosePublishResult::Sent | ConntrackClosePublishResult::Disabled
+    ) {
+        stats.increment_conntrack_close_event_drop_total();
+    }
+
     relay_result
+}
+
+fn classify_conntrack_close_reason(result: &Result<()>) -> ConntrackCloseReason {
+    match result {
+        Ok(()) => ConntrackCloseReason::NormalEof,
+        Err(crate::error::ProxyError::Io(error))
+            if matches!(error.kind(), std::io::ErrorKind::TimedOut) =>
+        {
+            ConntrackCloseReason::Timeout
+        }
+        Err(crate::error::ProxyError::Io(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::UnexpectedEof
+            ) =>
+        {
+            ConntrackCloseReason::Reset
+        }
+        Err(crate::error::ProxyError::Proxy(message))
+            if message.contains("pressure") || message.contains("evicted") =>
+        {
+            ConntrackCloseReason::Pressure
+        }
+        Err(_) => ConntrackCloseReason::Other,
+    }
 }
 
 fn get_dc_addr_static(dc_idx: i16, config: &ProxyConfig) -> Result<SocketAddr> {

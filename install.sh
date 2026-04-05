@@ -20,6 +20,13 @@ TARGET_VERSION="${VERSION:-latest}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) ACTION="help"; shift ;;
+        -d|--domain)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                printf '[ERROR] %s requires a domain argument.\n' "$1" >&2
+                exit 1
+            fi
+            TLS_DOMAIN="$2"
+            shift 2 ;;
         uninstall|--uninstall)
             if [ "$ACTION" != "purge" ]; then ACTION="uninstall"; fi
             shift ;;
@@ -52,11 +59,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 show_help() {
-    say "Usage: $0 [ <version> | install | uninstall | purge | --help ]"
+    say "Usage: $0 [ <version> | install | uninstall | purge ] [ -d <domain> ] [ --help ]"
     say "  <version>    Install specific version (e.g. 3.3.15, default: latest)"
     say "  install      Install the latest version"
     say "  uninstall    Remove the binary and service (keeps config and user)"
     say "  purge        Remove everything including configuration, data, and user"
+    say "  -d, --domain Set TLS domain (default: petrovich.ru)"
     exit 0
 }
 
@@ -192,7 +200,13 @@ verify_install_deps() {
 detect_arch() {
     sys_arch="$(uname -m)"
     case "$sys_arch" in
-        x86_64|amd64) echo "x86_64" ;;
+        x86_64|amd64)
+            if [ -r /proc/cpuinfo ] && grep -q "avx2" /proc/cpuinfo 2>/dev/null && grep -q "bmi2" /proc/cpuinfo 2>/dev/null; then
+                echo "x86_64-v3"
+            else
+                echo "x86_64"
+            fi
+            ;;
         aarch64|arm64) echo "aarch64" ;;
         *) die "Unsupported architecture: $sys_arch" ;;
     esac
@@ -500,7 +514,21 @@ case "$ACTION" in
             die "Temp directory is invalid or was not created"
         fi
 
-        fetch_file "$DL_URL" "${TEMP_DIR}/${FILE_NAME}" || die "Download failed"
+        if ! fetch_file "$DL_URL" "${TEMP_DIR}/${FILE_NAME}"; then
+            if [ "$ARCH" = "x86_64-v3" ]; then
+                say "  -> x86_64-v3 build not found, falling back to standard x86_64..."
+                ARCH="x86_64"
+                FILE_NAME="${BIN_NAME}-${ARCH}-linux-${LIBC}.tar.gz"
+                if [ "$TARGET_VERSION" = "latest" ]; then
+                    DL_URL="https://github.com/${REPO}/releases/latest/download/${FILE_NAME}"
+                else 
+                    DL_URL="https://github.com/${REPO}/releases/download/${TARGET_VERSION}/${FILE_NAME}"
+                fi
+                fetch_file "$DL_URL" "${TEMP_DIR}/${FILE_NAME}" || die "Download failed"
+            else
+                die "Download failed"
+            fi
+        fi
 
         say ">>> Stage 3: Extracting archive"
         if ! gzip -dc "${TEMP_DIR}/${FILE_NAME}" | tar -xf - -C "$TEMP_DIR" 2>/dev/null; then

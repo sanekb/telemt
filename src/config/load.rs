@@ -922,6 +922,43 @@ impl ProxyConfig {
             ));
         }
 
+        if config.server.conntrack_control.pressure_high_watermark_pct == 0
+            || config.server.conntrack_control.pressure_high_watermark_pct > 100
+        {
+            return Err(ProxyError::Config(
+                "server.conntrack_control.pressure_high_watermark_pct must be within [1, 100]"
+                    .to_string(),
+            ));
+        }
+
+        if config.server.conntrack_control.pressure_low_watermark_pct
+            >= config.server.conntrack_control.pressure_high_watermark_pct
+        {
+            return Err(ProxyError::Config(
+                "server.conntrack_control.pressure_low_watermark_pct must be < pressure_high_watermark_pct"
+                    .to_string(),
+            ));
+        }
+
+        if config.server.conntrack_control.delete_budget_per_sec == 0 {
+            return Err(ProxyError::Config(
+                "server.conntrack_control.delete_budget_per_sec must be > 0".to_string(),
+            ));
+        }
+
+        if matches!(config.server.conntrack_control.mode, ConntrackMode::Hybrid)
+            && config
+                .server
+                .conntrack_control
+                .hybrid_listener_ips
+                .is_empty()
+        {
+            return Err(ProxyError::Config(
+                "server.conntrack_control.hybrid_listener_ips must be non-empty in mode=hybrid"
+                    .to_string(),
+            ));
+        }
+
         if config.general.effective_me_pool_force_close_secs() > 0
             && config.general.effective_me_pool_force_close_secs()
                 < config.general.me_pool_drain_ttl_secs
@@ -1327,6 +1364,31 @@ mod tests {
             cfg.server.api.runtime_edge_events_capacity,
             default_api_runtime_edge_events_capacity()
         );
+        assert_eq!(
+            cfg.server.conntrack_control.inline_conntrack_control,
+            default_conntrack_control_enabled()
+        );
+        assert_eq!(cfg.server.conntrack_control.mode, ConntrackMode::default());
+        assert_eq!(
+            cfg.server.conntrack_control.backend,
+            ConntrackBackend::default()
+        );
+        assert_eq!(
+            cfg.server.conntrack_control.profile,
+            ConntrackPressureProfile::default()
+        );
+        assert_eq!(
+            cfg.server.conntrack_control.pressure_high_watermark_pct,
+            default_conntrack_pressure_high_watermark_pct()
+        );
+        assert_eq!(
+            cfg.server.conntrack_control.pressure_low_watermark_pct,
+            default_conntrack_pressure_low_watermark_pct()
+        );
+        assert_eq!(
+            cfg.server.conntrack_control.delete_budget_per_sec,
+            default_conntrack_delete_budget_per_sec()
+        );
         assert_eq!(cfg.access.users, default_access_users());
         assert_eq!(
             cfg.access.user_max_tcp_conns_global_each,
@@ -1471,6 +1533,31 @@ mod tests {
         assert_eq!(
             server.api.runtime_edge_events_capacity,
             default_api_runtime_edge_events_capacity()
+        );
+        assert_eq!(
+            server.conntrack_control.inline_conntrack_control,
+            default_conntrack_control_enabled()
+        );
+        assert_eq!(server.conntrack_control.mode, ConntrackMode::default());
+        assert_eq!(
+            server.conntrack_control.backend,
+            ConntrackBackend::default()
+        );
+        assert_eq!(
+            server.conntrack_control.profile,
+            ConntrackPressureProfile::default()
+        );
+        assert_eq!(
+            server.conntrack_control.pressure_high_watermark_pct,
+            default_conntrack_pressure_high_watermark_pct()
+        );
+        assert_eq!(
+            server.conntrack_control.pressure_low_watermark_pct,
+            default_conntrack_pressure_low_watermark_pct()
+        );
+        assert_eq!(
+            server.conntrack_control.delete_budget_per_sec,
+            default_conntrack_delete_budget_per_sec()
         );
 
         let access = AccessConfig::default();
@@ -2401,6 +2488,118 @@ mod tests {
         std::fs::write(&path, toml).unwrap();
         let err = ProxyConfig::load(&path).unwrap_err().to_string();
         assert!(err.contains("server.api.runtime_edge_events_capacity must be within [16, 4096]"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conntrack_pressure_high_watermark_out_of_range_is_rejected() {
+        let toml = r#"
+            [server.conntrack_control]
+            pressure_high_watermark_pct = 0
+
+            [censorship]
+            tls_domain = "example.com"
+
+            [access.users]
+            user = "00000000000000000000000000000000"
+        "#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("telemt_conntrack_high_watermark_invalid_test.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = ProxyConfig::load(&path).unwrap_err().to_string();
+        assert!(err.contains(
+            "server.conntrack_control.pressure_high_watermark_pct must be within [1, 100]"
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conntrack_pressure_low_watermark_must_be_below_high() {
+        let toml = r#"
+            [server.conntrack_control]
+            pressure_high_watermark_pct = 50
+            pressure_low_watermark_pct = 50
+
+            [censorship]
+            tls_domain = "example.com"
+
+            [access.users]
+            user = "00000000000000000000000000000000"
+        "#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("telemt_conntrack_low_watermark_invalid_test.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = ProxyConfig::load(&path).unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "server.conntrack_control.pressure_low_watermark_pct must be < pressure_high_watermark_pct"
+            )
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conntrack_delete_budget_zero_is_rejected() {
+        let toml = r#"
+            [server.conntrack_control]
+            delete_budget_per_sec = 0
+
+            [censorship]
+            tls_domain = "example.com"
+
+            [access.users]
+            user = "00000000000000000000000000000000"
+        "#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("telemt_conntrack_delete_budget_invalid_test.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = ProxyConfig::load(&path).unwrap_err().to_string();
+        assert!(err.contains("server.conntrack_control.delete_budget_per_sec must be > 0"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conntrack_hybrid_mode_requires_listener_allow_list() {
+        let toml = r#"
+            [server.conntrack_control]
+            mode = "hybrid"
+
+            [censorship]
+            tls_domain = "example.com"
+
+            [access.users]
+            user = "00000000000000000000000000000000"
+        "#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("telemt_conntrack_hybrid_requires_ips_test.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = ProxyConfig::load(&path).unwrap_err().to_string();
+        assert!(err.contains(
+            "server.conntrack_control.hybrid_listener_ips must be non-empty in mode=hybrid"
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conntrack_profile_is_loaded_from_config() {
+        let toml = r#"
+            [server.conntrack_control]
+            profile = "aggressive"
+
+            [censorship]
+            tls_domain = "example.com"
+
+            [access.users]
+            user = "00000000000000000000000000000000"
+        "#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("telemt_conntrack_profile_parse_test.toml");
+        std::fs::write(&path, toml).unwrap();
+        let cfg = ProxyConfig::load(&path).unwrap();
+        assert_eq!(
+            cfg.server.conntrack_control.profile,
+            ConntrackPressureProfile::Aggressive
+        );
         let _ = std::fs::remove_file(path);
     }
 

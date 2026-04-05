@@ -249,6 +249,43 @@ async fn wait_mask_connect_budget(started: Instant) {
     }
 }
 
+// Log-normal sample bounded to [floor, ceiling]. Median = sqrt(floor * ceiling).
+// Implements Box-Muller transform for standard normal sampling — no external
+// dependency on rand_distr (which is incompatible with rand 0.10).
+// sigma is chosen so ~99% of raw samples land inside [floor, ceiling] before clamp.
+// When floor > ceiling (misconfiguration), returns ceiling (the smaller value).
+// When floor == ceiling, returns that value. When both are 0, returns 0.
+pub(crate) fn sample_lognormal_percentile_bounded(
+    floor: u64,
+    ceiling: u64,
+    rng: &mut impl Rng,
+) -> u64 {
+    if ceiling == 0 && floor == 0 {
+        return 0;
+    }
+    if floor > ceiling {
+        return ceiling;
+    }
+    if floor == ceiling {
+        return floor;
+    }
+    let floor_f = floor.max(1) as f64;
+    let ceiling_f = ceiling.max(1) as f64;
+    let mu = (floor_f.ln() + ceiling_f.ln()) / 2.0;
+    // 4.65 ≈ 2 * 2.326 (double-sided z-score for 99th percentile)
+    let sigma = ((ceiling_f / floor_f).ln() / 4.65).max(0.01);
+    // Box-Muller transform: two uniform samples → one standard normal sample
+    let u1: f64 = rng.random_range(f64::MIN_POSITIVE..1.0);
+    let u2: f64 = rng.random_range(0.0_f64..std::f64::consts::TAU);
+    let normal_sample = (-2.0_f64 * u1.ln()).sqrt() * u2.cos();
+    let raw = (mu + sigma * normal_sample).exp();
+    if raw.is_finite() {
+        (raw as u64).clamp(floor, ceiling)
+    } else {
+        ((floor_f * ceiling_f).sqrt()) as u64
+    }
+}
+
 fn mask_outcome_target_budget(config: &ProxyConfig) -> Duration {
     if config.censorship.mask_timing_normalization_enabled {
         let floor = config.censorship.mask_timing_normalization_floor_ms;
@@ -257,14 +294,18 @@ fn mask_outcome_target_budget(config: &ProxyConfig) -> Duration {
             if ceiling == 0 {
                 return Duration::from_millis(0);
             }
+            // floor=0 stays uniform: log-normal cannot model distribution anchored at zero
             let mut rng = rand::rng();
             return Duration::from_millis(rng.random_range(0..=ceiling));
         }
         if ceiling > floor {
             let mut rng = rand::rng();
-            return Duration::from_millis(rng.random_range(floor..=ceiling));
+            return Duration::from_millis(sample_lognormal_percentile_bounded(
+                floor, ceiling, &mut rng,
+            ));
         }
-        return Duration::from_millis(floor);
+        // ceiling <= floor: use the larger value (fail-closed: preserve longer delay)
+        return Duration::from_millis(floor.max(ceiling));
     }
 
     MASK_TIMEOUT
@@ -1003,3 +1044,11 @@ mod masking_padding_timeout_adversarial_tests;
 #[cfg(all(test, feature = "redteam_offline_expected_fail"))]
 #[path = "tests/masking_offline_target_redteam_expected_fail_tests.rs"]
 mod masking_offline_target_redteam_expected_fail_tests;
+
+#[cfg(test)]
+#[path = "tests/masking_baseline_invariant_tests.rs"]
+mod masking_baseline_invariant_tests;
+
+#[cfg(test)]
+#[path = "tests/masking_lognormal_timing_security_tests.rs"]
+mod masking_lognormal_timing_security_tests;

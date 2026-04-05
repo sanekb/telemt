@@ -48,6 +48,10 @@ const DEFAULT_ME_POOL_DRAIN_SOFT_EVICT_BUDGET_PER_CORE: u16 = 16;
 const DEFAULT_ME_POOL_DRAIN_SOFT_EVICT_COOLDOWN_MS: u64 = 1000;
 const DEFAULT_USER_MAX_UNIQUE_IPS_WINDOW_SECS: u64 = 30;
 const DEFAULT_ACCEPT_PERMIT_TIMEOUT_MS: u64 = 250;
+const DEFAULT_CONNTRACK_CONTROL_ENABLED: bool = true;
+const DEFAULT_CONNTRACK_PRESSURE_HIGH_WATERMARK_PCT: u8 = 85;
+const DEFAULT_CONNTRACK_PRESSURE_LOW_WATERMARK_PCT: u8 = 70;
+const DEFAULT_CONNTRACK_DELETE_BUDGET_PER_SEC: u64 = 4096;
 const DEFAULT_UPSTREAM_CONNECT_RETRY_ATTEMPTS: u32 = 2;
 const DEFAULT_UPSTREAM_UNHEALTHY_FAIL_THRESHOLD: u32 = 5;
 const DEFAULT_UPSTREAM_CONNECT_BUDGET_MS: u64 = 3000;
@@ -96,7 +100,7 @@ pub(crate) fn default_fake_cert_len() -> usize {
 }
 
 pub(crate) fn default_tls_front_dir() -> String {
-    "tlsfront".to_string()
+    "/etc/telemt/tlsfront".to_string()
 }
 
 pub(crate) fn default_replay_check_len() -> usize {
@@ -221,6 +225,22 @@ pub(crate) fn default_accept_permit_timeout_ms() -> u64 {
     DEFAULT_ACCEPT_PERMIT_TIMEOUT_MS
 }
 
+pub(crate) fn default_conntrack_control_enabled() -> bool {
+    DEFAULT_CONNTRACK_CONTROL_ENABLED
+}
+
+pub(crate) fn default_conntrack_pressure_high_watermark_pct() -> u8 {
+    DEFAULT_CONNTRACK_PRESSURE_HIGH_WATERMARK_PCT
+}
+
+pub(crate) fn default_conntrack_pressure_low_watermark_pct() -> u8 {
+    DEFAULT_CONNTRACK_PRESSURE_LOW_WATERMARK_PCT
+}
+
+pub(crate) fn default_conntrack_delete_budget_per_sec() -> u64 {
+    DEFAULT_CONNTRACK_DELETE_BUDGET_PER_SEC
+}
+
 pub(crate) fn default_prefer_4() -> u8 {
     4
 }
@@ -282,7 +302,7 @@ pub(crate) fn default_me2dc_fallback() -> bool {
 }
 
 pub(crate) fn default_me2dc_fast() -> bool {
-    false
+    true
 }
 
 pub(crate) fn default_keepalive_interval() -> u64 {
@@ -538,7 +558,7 @@ pub(crate) fn default_beobachten_flush_secs() -> u64 {
 }
 
 pub(crate) fn default_beobachten_file() -> String {
-    "cache/beobachten.txt".to_string()
+    "/etc/telemt/beobachten.txt".to_string()
 }
 
 pub(crate) fn default_tls_new_session_tickets() -> u8 {

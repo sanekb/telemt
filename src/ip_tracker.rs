@@ -26,6 +26,15 @@ pub struct UserIpTracker {
     cleanup_drain_lock: Arc<AsyncMutex<()>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct UserIpTrackerMemoryStats {
+    pub active_users: usize,
+    pub recent_users: usize,
+    pub active_entries: usize,
+    pub recent_entries: usize,
+    pub cleanup_queue_len: usize,
+}
+
 impl UserIpTracker {
     pub fn new() -> Self {
         Self {
@@ -141,6 +150,13 @@ impl UserIpTracker {
 
         let mut active_ips = self.active_ips.write().await;
         let mut recent_ips = self.recent_ips.write().await;
+        let window = *self.limit_window.read().await;
+        let now = Instant::now();
+
+        for user_recent in recent_ips.values_mut() {
+            Self::prune_recent(user_recent, now, window);
+        }
+
         let mut users =
             Vec::<String>::with_capacity(active_ips.len().saturating_add(recent_ips.len()));
         users.extend(active_ips.keys().cloned());
@@ -163,6 +179,26 @@ impl UserIpTracker {
                 active_ips.remove(&user);
                 recent_ips.remove(&user);
             }
+        }
+    }
+
+    pub async fn memory_stats(&self) -> UserIpTrackerMemoryStats {
+        let cleanup_queue_len = self
+            .cleanup_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len();
+        let active_ips = self.active_ips.read().await;
+        let recent_ips = self.recent_ips.read().await;
+        let active_entries = active_ips.values().map(HashMap::len).sum();
+        let recent_entries = recent_ips.values().map(HashMap::len).sum();
+
+        UserIpTrackerMemoryStats {
+            active_users: active_ips.len(),
+            recent_users: recent_ips.len(),
+            active_entries,
+            recent_entries,
+            cleanup_queue_len,
         }
     }
 
@@ -451,6 +487,7 @@ impl Default for UserIpTracker {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::sync::atomic::Ordering;
 
     fn test_ipv4(oct1: u8, oct2: u8, oct3: u8, oct4: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(oct1, oct2, oct3, oct4))
@@ -763,5 +800,55 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(tracker.check_and_add("test_user", ip2).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_memory_stats_reports_queue_and_entry_counts() {
+        let tracker = UserIpTracker::new();
+        tracker.set_user_limit("test_user", 4).await;
+        let ip1 = test_ipv4(10, 2, 0, 1);
+        let ip2 = test_ipv4(10, 2, 0, 2);
+
+        tracker.check_and_add("test_user", ip1).await.unwrap();
+        tracker.check_and_add("test_user", ip2).await.unwrap();
+        tracker.enqueue_cleanup("test_user".to_string(), ip1);
+
+        let snapshot = tracker.memory_stats().await;
+        assert_eq!(snapshot.active_users, 1);
+        assert_eq!(snapshot.recent_users, 1);
+        assert_eq!(snapshot.active_entries, 2);
+        assert_eq!(snapshot.recent_entries, 2);
+        assert_eq!(snapshot.cleanup_queue_len, 1);
+    }
+
+    #[tokio::test]
+    async fn test_compact_prunes_stale_recent_entries() {
+        let tracker = UserIpTracker::new();
+        tracker
+            .set_limit_policy(UserMaxUniqueIpsMode::TimeWindow, 1)
+            .await;
+
+        let stale_user = "stale-user".to_string();
+        let stale_ip = test_ipv4(10, 3, 0, 1);
+        {
+            let mut recent_ips = tracker.recent_ips.write().await;
+            recent_ips
+                .entry(stale_user.clone())
+                .or_insert_with(HashMap::new)
+                .insert(stale_ip, Instant::now() - Duration::from_secs(5));
+        }
+
+        tracker.last_compact_epoch_secs.store(0, Ordering::Relaxed);
+        tracker
+            .check_and_add("trigger-user", test_ipv4(10, 3, 0, 2))
+            .await
+            .unwrap();
+
+        let recent_ips = tracker.recent_ips.read().await;
+        let stale_exists = recent_ips
+            .get(&stale_user)
+            .map(|ips| ips.contains_key(&stale_ip))
+            .unwrap_or(false);
+        assert!(!stale_exists);
     }
 }

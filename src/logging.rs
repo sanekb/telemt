@@ -88,8 +88,10 @@ pub fn init_logging(
             // Use a custom fmt layer that writes to syslog
             let fmt_layer = fmt::Layer::default()
                 .with_ansi(false)
-                .with_target(true)
-                .with_writer(SyslogWriter::new);
+                .with_target(false)
+                .with_level(false)
+                .without_time()
+                .with_writer(SyslogMakeWriter::new());
 
             tracing_subscriber::registry()
                 .with(filter_layer)
@@ -137,12 +139,17 @@ pub fn init_logging(
 
 /// Syslog writer for tracing.
 #[cfg(unix)]
+#[derive(Clone, Copy)]
+struct SyslogMakeWriter;
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
 struct SyslogWriter {
-    _private: (),
+    priority: libc::c_int,
 }
 
 #[cfg(unix)]
-impl SyslogWriter {
+impl SyslogMakeWriter {
     fn new() -> Self {
         // Open syslog connection on first use
         static INIT: std::sync::Once = std::sync::Once::new();
@@ -153,7 +160,18 @@ impl SyslogWriter {
                 libc::openlog(ident, libc::LOG_PID | libc::LOG_NDELAY, libc::LOG_DAEMON);
             }
         });
-        Self { _private: () }
+        Self
+    }
+}
+
+#[cfg(unix)]
+fn syslog_priority_for_level(level: &tracing::Level) -> libc::c_int {
+    match *level {
+        tracing::Level::ERROR => libc::LOG_ERR,
+        tracing::Level::WARN => libc::LOG_WARNING,
+        tracing::Level::INFO => libc::LOG_INFO,
+        tracing::Level::DEBUG => libc::LOG_DEBUG,
+        tracing::Level::TRACE => libc::LOG_DEBUG,
     }
 }
 
@@ -168,26 +186,13 @@ impl std::io::Write for SyslogWriter {
             return Ok(buf.len());
         }
 
-        // Determine priority based on log level in the message
-        let priority = if msg.contains(" ERROR ") || msg.contains(" error ") {
-            libc::LOG_ERR
-        } else if msg.contains(" WARN ") || msg.contains(" warn ") {
-            libc::LOG_WARNING
-        } else if msg.contains(" INFO ") || msg.contains(" info ") {
-            libc::LOG_INFO
-        } else if msg.contains(" DEBUG ") || msg.contains(" debug ") {
-            libc::LOG_DEBUG
-        } else {
-            libc::LOG_INFO
-        };
-
         // Write to syslog
         let c_msg = std::ffi::CString::new(msg.as_bytes())
             .unwrap_or_else(|_| std::ffi::CString::new("(invalid utf8)").unwrap());
 
         unsafe {
             libc::syslog(
-                priority,
+                self.priority,
                 b"%s\0".as_ptr() as *const libc::c_char,
                 c_msg.as_ptr(),
             );
@@ -202,11 +207,19 @@ impl std::io::Write for SyslogWriter {
 }
 
 #[cfg(unix)]
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SyslogWriter {
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SyslogMakeWriter {
     type Writer = SyslogWriter;
 
     fn make_writer(&'a self) -> Self::Writer {
-        SyslogWriter::new()
+        SyslogWriter {
+            priority: libc::LOG_INFO,
+        }
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        SyslogWriter {
+            priority: syslog_priority_for_level(meta.level()),
+        }
     }
 }
 
@@ -301,5 +314,30 @@ mod tests {
             parse_log_destination(&args),
             LogDestination::Syslog
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_syslog_priority_for_level_mapping() {
+        assert_eq!(
+            syslog_priority_for_level(&tracing::Level::ERROR),
+            libc::LOG_ERR
+        );
+        assert_eq!(
+            syslog_priority_for_level(&tracing::Level::WARN),
+            libc::LOG_WARNING
+        );
+        assert_eq!(
+            syslog_priority_for_level(&tracing::Level::INFO),
+            libc::LOG_INFO
+        );
+        assert_eq!(
+            syslog_priority_for_level(&tracing::Level::DEBUG),
+            libc::LOG_DEBUG
+        );
+        assert_eq!(
+            syslog_priority_for_level(&tracing::Level::TRACE),
+            libc::LOG_DEBUG
+        );
     }
 }

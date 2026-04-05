@@ -70,6 +70,7 @@ use tracing::{debug, trace, warn};
 ///
 /// iOS keeps Telegram connections alive in background for up to 30 minutes.
 /// Closing earlier causes unnecessary reconnects and handshake overhead.
+#[allow(dead_code)]
 const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Watchdog check interval — also used for periodic rate logging.
@@ -453,6 +454,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StatsIo<S> {
 /// - Clean shutdown: both write sides are shut down on exit
 /// - Error propagation: quota exits return `ProxyError::DataQuotaExceeded`,
 ///   other I/O failures are returned as `ProxyError::Io`
+#[allow(dead_code)]
 pub async fn relay_bidirectional<CR, CW, SR, SW>(
     client_reader: CR,
     client_writer: CW,
@@ -471,6 +473,42 @@ where
     SR: AsyncRead + Unpin + Send + 'static,
     SW: AsyncWrite + Unpin + Send + 'static,
 {
+    relay_bidirectional_with_activity_timeout(
+        client_reader,
+        client_writer,
+        server_reader,
+        server_writer,
+        c2s_buf_size,
+        s2c_buf_size,
+        user,
+        stats,
+        quota_limit,
+        _buffer_pool,
+        ACTIVITY_TIMEOUT,
+    )
+    .await
+}
+
+pub async fn relay_bidirectional_with_activity_timeout<CR, CW, SR, SW>(
+    client_reader: CR,
+    client_writer: CW,
+    server_reader: SR,
+    server_writer: SW,
+    c2s_buf_size: usize,
+    s2c_buf_size: usize,
+    user: &str,
+    stats: Arc<Stats>,
+    quota_limit: Option<u64>,
+    _buffer_pool: Arc<BufferPool>,
+    activity_timeout: Duration,
+) -> Result<()>
+where
+    CR: AsyncRead + Unpin + Send + 'static,
+    CW: AsyncWrite + Unpin + Send + 'static,
+    SR: AsyncRead + Unpin + Send + 'static,
+    SW: AsyncWrite + Unpin + Send + 'static,
+{
+    let activity_timeout = activity_timeout.max(Duration::from_secs(1));
     let epoch = Instant::now();
     let counters = Arc::new(SharedCounters::new());
     let quota_exceeded = Arc::new(AtomicBool::new(false));
@@ -512,7 +550,7 @@ where
             }
 
             // ── Activity timeout ────────────────────────────────────
-            if idle >= ACTIVITY_TIMEOUT {
+            if idle >= activity_timeout {
                 let c2s = wd_counters.c2s_bytes.load(Ordering::Relaxed);
                 let s2c = wd_counters.s2c_bytes.load(Ordering::Relaxed);
                 warn!(
@@ -671,3 +709,7 @@ mod relay_watchdog_delta_security_tests;
 #[cfg(test)]
 #[path = "tests/relay_atomic_quota_invariant_tests.rs"]
 mod relay_atomic_quota_invariant_tests;
+
+#[cfg(test)]
+#[path = "tests/relay_baseline_invariant_tests.rs"]
+mod relay_baseline_invariant_tests;

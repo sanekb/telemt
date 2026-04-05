@@ -29,10 +29,12 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*, reload};
 
 use crate::api;
 use crate::config::{LogLevel, ProxyConfig};
+use crate::conntrack_control;
 use crate::crypto::SecureRandom;
 use crate::ip_tracker::UserIpTracker;
 use crate::network::probe::{decide_network_capabilities, log_probe_result, run_probe};
 use crate::proxy::route_mode::{RelayRouteMode, RouteRuntimeController};
+use crate::proxy::shared_state::ProxySharedState;
 use crate::startup::{
     COMPONENT_API_BOOTSTRAP, COMPONENT_CONFIG_LOAD, COMPONENT_ME_POOL_CONSTRUCT,
     COMPONENT_ME_POOL_INIT_STAGE1, COMPONENT_ME_PROXY_CONFIG_V4, COMPONENT_ME_PROXY_CONFIG_V6,
@@ -110,6 +112,7 @@ async fn run_inner(
         .await;
     let cli_args = parse_cli();
     let config_path_cli = cli_args.config_path;
+    let config_path_explicit = cli_args.config_path_explicit;
     let data_path = cli_args.data_path;
     let cli_silent = cli_args.silent;
     let cli_log_level = cli_args.log_level;
@@ -121,7 +124,8 @@ async fn run_inner(
             std::process::exit(1);
         }
     };
-    let config_path = resolve_runtime_config_path(&config_path_cli, &startup_cwd);
+    let mut config_path =
+        resolve_runtime_config_path(&config_path_cli, &startup_cwd, config_path_explicit);
 
     let mut config = match ProxyConfig::load(&config_path) {
         Ok(c) => c,
@@ -131,11 +135,99 @@ async fn run_inner(
                 std::process::exit(1);
             } else {
                 let default = ProxyConfig::default();
-                std::fs::write(&config_path, toml::to_string_pretty(&default).unwrap()).unwrap();
-                eprintln!(
-                    "[telemt] Created default config at {}",
-                    config_path.display()
-                );
+
+                let serialized =
+                    match toml::to_string_pretty(&default).or_else(|_| toml::to_string(&default)) {
+                        Ok(value) => Some(value),
+                        Err(serialize_error) => {
+                            eprintln!(
+                                "[telemt] Warning: failed to serialize default config: {}",
+                                serialize_error
+                            );
+                            None
+                        }
+                    };
+
+                if config_path_explicit {
+                    if let Some(serialized) = serialized.as_ref() {
+                        if let Err(write_error) = std::fs::write(&config_path, serialized) {
+                            eprintln!(
+                                "[telemt] Error: failed to create explicit config at {}: {}",
+                                config_path.display(),
+                                write_error
+                            );
+                            std::process::exit(1);
+                        }
+                        eprintln!(
+                            "[telemt] Created default config at {}",
+                            config_path.display()
+                        );
+                    } else {
+                        eprintln!(
+                            "[telemt] Warning: running with in-memory default config without writing to disk"
+                        );
+                    }
+                } else {
+                    let system_dir = std::path::Path::new("/etc/telemt");
+                    let system_config_path = system_dir.join("telemt.toml");
+                    let startup_config_path = startup_cwd.join("config.toml");
+                    let mut persisted = false;
+
+                    if let Some(serialized) = serialized.as_ref() {
+                        match std::fs::create_dir_all(system_dir) {
+                            Ok(()) => match std::fs::write(&system_config_path, serialized) {
+                                Ok(()) => {
+                                    config_path = system_config_path;
+                                    eprintln!(
+                                        "[telemt] Created default config at {}",
+                                        config_path.display()
+                                    );
+                                    persisted = true;
+                                }
+                                Err(write_error) => {
+                                    eprintln!(
+                                        "[telemt] Warning: failed to write default config at {}: {}",
+                                        system_config_path.display(),
+                                        write_error
+                                    );
+                                }
+                            },
+                            Err(create_error) => {
+                                eprintln!(
+                                    "[telemt] Warning: failed to create {}: {}",
+                                    system_dir.display(),
+                                    create_error
+                                );
+                            }
+                        }
+
+                        if !persisted {
+                            match std::fs::write(&startup_config_path, serialized) {
+                                Ok(()) => {
+                                    config_path = startup_config_path;
+                                    eprintln!(
+                                        "[telemt] Created default config at {}",
+                                        config_path.display()
+                                    );
+                                    persisted = true;
+                                }
+                                Err(write_error) => {
+                                    eprintln!(
+                                        "[telemt] Warning: failed to write default config at {}: {}",
+                                        startup_config_path.display(),
+                                        write_error
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if !persisted {
+                        eprintln!(
+                            "[telemt] Warning: running with in-memory default config without writing to disk"
+                        );
+                    }
+                }
                 default
             }
         }
@@ -631,6 +723,12 @@ async fn run_inner(
     )
     .await;
     let _admission_tx_hold = admission_tx;
+    let shared_state = ProxySharedState::new();
+    conntrack_control::spawn_conntrack_controller(
+        config_rx.clone(),
+        stats.clone(),
+        shared_state.clone(),
+    );
 
     let bound = listeners::bind_listeners(
         &config,
@@ -651,6 +749,7 @@ async fn run_inner(
         tls_cache.clone(),
         ip_tracker.clone(),
         beobachten.clone(),
+        shared_state.clone(),
         max_connections.clone(),
     )
     .await?;
@@ -707,6 +806,7 @@ async fn run_inner(
         tls_cache.clone(),
         ip_tracker.clone(),
         beobachten.clone(),
+        shared_state,
         max_connections.clone(),
     );
 

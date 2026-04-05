@@ -159,8 +159,8 @@ MemoryDenyWriteExecute=true
 LockPersonality=true
 
 # Allow binding to privileged ports and writing to specific paths
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 ReadWritePaths=/etc/telemt /var/run /var/lib/telemt
 
 [Install]

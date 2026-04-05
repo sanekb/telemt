@@ -2,20 +2,14 @@ use super::*;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[test]
 fn edge_zero_state_len_yields_zero_start_offset() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 44));
     let now = Instant::now();
 
     assert_eq!(
-        auth_probe_scan_start_offset(ip, now, 0, 16),
+        auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, 0, 16),
         0,
         "empty map must not produce non-zero scan offset"
     );
@@ -23,7 +17,7 @@ fn edge_zero_state_len_yields_zero_start_offset() {
 
 #[test]
 fn adversarial_large_state_must_allow_start_offset_outside_scan_budget_window() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let base = Instant::now();
     let scan_limit = 16usize;
     let state_len = 65_536usize;
@@ -37,7 +31,8 @@ fn adversarial_large_state_must_allow_start_offset_outside_scan_budget_window() 
             (i & 0xff) as u8,
         ));
         let now = base + Duration::from_micros(i as u64);
-        let start = auth_probe_scan_start_offset(ip, now, state_len, scan_limit);
+        let start =
+            auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, scan_limit);
         assert!(
             start < state_len,
             "start offset must stay within state length; start={start}, len={state_len}"
@@ -56,12 +51,12 @@ fn adversarial_large_state_must_allow_start_offset_outside_scan_budget_window() 
 
 #[test]
 fn positive_state_smaller_than_scan_limit_caps_to_state_len() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 17));
     let now = Instant::now();
 
     for state_len in 1..32usize {
-        let start = auth_probe_scan_start_offset(ip, now, state_len, 64);
+        let start = auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, 64);
         assert!(
             start < state_len,
             "start offset must never exceed state length when scan limit is larger"
@@ -71,7 +66,7 @@ fn positive_state_smaller_than_scan_limit_caps_to_state_len() {
 
 #[test]
 fn light_fuzz_scan_offset_budget_never_exceeds_effective_window() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let mut seed = 0x5A41_5356_4C32_3236u64;
     let base = Instant::now();
 
@@ -89,7 +84,8 @@ fn light_fuzz_scan_offset_budget_never_exceeds_effective_window() {
         let state_len = ((seed >> 8) as usize % 131_072).saturating_add(1);
         let scan_limit = ((seed >> 32) as usize % 512).saturating_add(1);
         let now = base + Duration::from_nanos(seed & 0xffff);
-        let start = auth_probe_scan_start_offset(ip, now, state_len, scan_limit);
+        let start =
+            auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, scan_limit);
 
         assert!(
             start < state_len,

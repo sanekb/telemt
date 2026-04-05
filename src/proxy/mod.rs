@@ -67,6 +67,7 @@ pub mod middle_relay;
 pub mod relay;
 pub mod route_mode;
 pub mod session_eviction;
+pub mod shared_state;
 
 pub use client::ClientHandler;
 #[allow(unused_imports)]
@@ -75,3 +76,15 @@ pub use handshake::*;
 pub use masking::*;
 #[allow(unused_imports)]
 pub use relay::*;
+
+#[cfg(test)]
+#[path = "tests/test_harness_common.rs"]
+mod test_harness_common;
+
+#[cfg(test)]
+#[path = "tests/proxy_shared_state_isolation_tests.rs"]
+mod proxy_shared_state_isolation_tests;
+
+#[cfg(test)]
+#[path = "tests/proxy_shared_state_parallel_execution_tests.rs"]
+mod proxy_shared_state_parallel_execution_tests;

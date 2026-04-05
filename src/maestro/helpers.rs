@@ -18,19 +18,38 @@ use crate::transport::middle_proxy::{
 pub(crate) fn resolve_runtime_config_path(
     config_path_cli: &str,
     startup_cwd: &std::path::Path,
+    config_path_explicit: bool,
 ) -> PathBuf {
-    let raw = PathBuf::from(config_path_cli);
-    let absolute = if raw.is_absolute() {
-        raw
-    } else {
-        startup_cwd.join(raw)
-    };
-    absolute.canonicalize().unwrap_or(absolute)
+    if config_path_explicit {
+        let raw = PathBuf::from(config_path_cli);
+        let absolute = if raw.is_absolute() {
+            raw
+        } else {
+            startup_cwd.join(raw)
+        };
+        return absolute.canonicalize().unwrap_or(absolute);
+    }
+
+    let etc_telemt = std::path::Path::new("/etc/telemt");
+    let candidates = [
+        startup_cwd.join("config.toml"),
+        startup_cwd.join("telemt.toml"),
+        etc_telemt.join("telemt.toml"),
+        etc_telemt.join("config.toml"),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return candidate.canonicalize().unwrap_or(candidate);
+        }
+    }
+
+    startup_cwd.join("config.toml")
 }
 
 /// Parsed CLI arguments.
 pub(crate) struct CliArgs {
     pub config_path: String,
+    pub config_path_explicit: bool,
     pub data_path: Option<PathBuf>,
     pub silent: bool,
     pub log_level: Option<String>,
@@ -39,6 +58,7 @@ pub(crate) struct CliArgs {
 
 pub(crate) fn parse_cli() -> CliArgs {
     let mut config_path = "config.toml".to_string();
+    let mut config_path_explicit = false;
     let mut data_path: Option<PathBuf> = None;
     let mut silent = false;
     let mut log_level: Option<String> = None;
@@ -72,6 +92,20 @@ pub(crate) fn parse_cli() -> CliArgs {
             s if s.starts_with("--data-path=") => {
                 data_path = Some(PathBuf::from(
                     s.trim_start_matches("--data-path=").to_string(),
+                ));
+            }
+            "--working-dir" => {
+                i += 1;
+                if i < args.len() {
+                    data_path = Some(PathBuf::from(args[i].clone()));
+                } else {
+                    eprintln!("Missing value for --working-dir");
+                    std::process::exit(0);
+                }
+            }
+            s if s.starts_with("--working-dir=") => {
+                data_path = Some(PathBuf::from(
+                    s.trim_start_matches("--working-dir=").to_string(),
                 ));
             }
             "--silent" | "-s" => {
@@ -111,13 +145,11 @@ pub(crate) fn parse_cli() -> CliArgs {
                     i += 1;
                 }
             }
-            s if s.starts_with("--working-dir") => {
-                if !s.contains('=') {
-                    i += 1;
-                }
-            }
             s if !s.starts_with('-') => {
-                config_path = s.to_string();
+                if !matches!(s, "run" | "start" | "stop" | "reload" | "status") {
+                    config_path = s.to_string();
+                    config_path_explicit = true;
+                }
             }
             other => {
                 eprintln!("Unknown option: {}", other);
@@ -128,6 +160,7 @@ pub(crate) fn parse_cli() -> CliArgs {
 
     CliArgs {
         config_path,
+        config_path_explicit,
         data_path,
         silent,
         log_level,
@@ -152,6 +185,7 @@ fn print_help() {
     eprintln!(
         "  --data-path <DIR>       Set data directory (absolute path; overrides config value)"
     );
+    eprintln!("  --working-dir <DIR>     Alias for --data-path");
     eprintln!("  --silent, -s            Suppress info logs");
     eprintln!("  --log-level <LEVEL>     debug|verbose|normal|silent");
     eprintln!("  --help, -h              Show this help");
@@ -210,7 +244,7 @@ mod tests {
         let target = startup_cwd.join("config.toml");
         std::fs::write(&target, " ").unwrap();
 
-        let resolved = resolve_runtime_config_path("config.toml", &startup_cwd);
+        let resolved = resolve_runtime_config_path("config.toml", &startup_cwd, true);
         assert_eq!(resolved, target.canonicalize().unwrap());
 
         let _ = std::fs::remove_file(&target);
@@ -226,8 +260,42 @@ mod tests {
         let startup_cwd = std::env::temp_dir().join(format!("telemt_cfg_path_missing_{nonce}"));
         std::fs::create_dir_all(&startup_cwd).unwrap();
 
-        let resolved = resolve_runtime_config_path("missing.toml", &startup_cwd);
+        let resolved = resolve_runtime_config_path("missing.toml", &startup_cwd, true);
         assert_eq!(resolved, startup_cwd.join("missing.toml"));
+
+        let _ = std::fs::remove_dir(&startup_cwd);
+    }
+
+    #[test]
+    fn resolve_runtime_config_path_uses_startup_candidates_when_not_explicit() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let startup_cwd =
+            std::env::temp_dir().join(format!("telemt_cfg_startup_candidates_{nonce}"));
+        std::fs::create_dir_all(&startup_cwd).unwrap();
+        let telemt = startup_cwd.join("telemt.toml");
+        std::fs::write(&telemt, " ").unwrap();
+
+        let resolved = resolve_runtime_config_path("config.toml", &startup_cwd, false);
+        assert_eq!(resolved, telemt.canonicalize().unwrap());
+
+        let _ = std::fs::remove_file(&telemt);
+        let _ = std::fs::remove_dir(&startup_cwd);
+    }
+
+    #[test]
+    fn resolve_runtime_config_path_defaults_to_startup_config_when_none_found() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let startup_cwd = std::env::temp_dir().join(format!("telemt_cfg_startup_default_{nonce}"));
+        std::fs::create_dir_all(&startup_cwd).unwrap();
+
+        let resolved = resolve_runtime_config_path("config.toml", &startup_cwd, false);
+        assert_eq!(resolved, startup_cwd.join("config.toml"));
 
         let _ = std::fs::remove_dir(&startup_cwd);
     }

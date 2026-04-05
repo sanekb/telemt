@@ -11,12 +11,6 @@ use tokio::sync::Barrier;
 
 // --- Helpers ---
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn test_config_with_secret_hex(secret_hex: &str) -> ProxyConfig {
     let mut cfg = ProxyConfig::default();
     cfg.access.users.clear();
@@ -164,8 +158,8 @@ fn make_valid_tls_client_hello_with_sni_and_alpn(
 
 #[tokio::test]
 async fn server_hello_delay_bypassed_if_max_is_zero_despite_high_min() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret = [0x1Au8; 16];
     let mut config = test_config_with_secret_hex("1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a");
@@ -201,10 +195,10 @@ async fn server_hello_delay_bypassed_if_max_is_zero_despite_high_min() {
 
 #[test]
 fn auth_probe_backoff_extreme_fail_streak_clamps_safely() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
-    let state = auth_probe_state_map();
+    let state = auth_probe_state_for_testing_in_shared(shared.as_ref());
     let peer_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 99));
     let now = Instant::now();
 
@@ -217,7 +211,7 @@ fn auth_probe_backoff_extreme_fail_streak_clamps_safely() {
         },
     );
 
-    auth_probe_record_failure_with_state(&state, peer_ip, now);
+    auth_probe_record_failure_with_state_in(shared.as_ref(), &state, peer_ip, now);
 
     let updated = state.get(&peer_ip).unwrap();
     assert_eq!(updated.fail_streak, u32::MAX);
@@ -270,8 +264,8 @@ fn generate_tg_nonce_cryptographic_uniqueness_and_entropy() {
 
 #[tokio::test]
 async fn mtproto_multi_user_decryption_isolation() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let mut config = ProxyConfig::default();
     config.general.modes.secure = true;
@@ -323,10 +317,8 @@ async fn mtproto_multi_user_decryption_isolation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn invalid_secret_warning_lock_contention_and_bound() {
-    let _guard = warned_secrets_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_warned_secrets_for_testing();
+    let shared = ProxySharedState::new();
+    clear_warned_secrets_for_testing_in_shared(shared.as_ref());
 
     let tasks = 50;
     let iterations_per_task = 100;
@@ -335,11 +327,18 @@ async fn invalid_secret_warning_lock_contention_and_bound() {
 
     for t in 0..tasks {
         let b = barrier.clone();
+        let shared = shared.clone();
         handles.push(tokio::spawn(async move {
             b.wait().await;
             for i in 0..iterations_per_task {
                 let user_name = format!("contention_user_{}_{}", t, i);
-                warn_invalid_secret_once(&user_name, "invalid_hex", ACCESS_SECRET_BYTES, None);
+                warn_invalid_secret_once_in(
+                    shared.as_ref(),
+                    &user_name,
+                    "invalid_hex",
+                    ACCESS_SECRET_BYTES,
+                    None,
+                );
             }
         }));
     }
@@ -348,7 +347,7 @@ async fn invalid_secret_warning_lock_contention_and_bound() {
         handle.await.unwrap();
     }
 
-    let warned = INVALID_SECRET_WARNED.get().unwrap();
+    let warned = warned_secrets_for_testing_in_shared(shared.as_ref());
     let guard = warned
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -362,8 +361,8 @@ async fn invalid_secret_warning_lock_contention_and_bound() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mtproto_strict_concurrent_replay_race_condition() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "4A4A4A4A4A4A4A4A4A4A4A4A4A4A4A4A";
     let config = Arc::new(test_config_with_secret_hex(secret_hex));
@@ -428,8 +427,8 @@ async fn mtproto_strict_concurrent_replay_race_condition() {
 
 #[tokio::test]
 async fn tls_alpn_zero_length_protocol_handled_safely() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret = [0x5Bu8; 16];
     let mut config = test_config_with_secret_hex("5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b");
@@ -461,8 +460,8 @@ async fn tls_alpn_zero_length_protocol_handled_safely() {
 
 #[tokio::test]
 async fn tls_sni_massive_hostname_does_not_panic() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret = [0x6Cu8; 16];
     let config = test_config_with_secret_hex("6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c");
@@ -497,8 +496,8 @@ async fn tls_sni_massive_hostname_does_not_panic() {
 
 #[tokio::test]
 async fn tls_progressive_truncation_fuzzing_no_panics() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret = [0x7Du8; 16];
     let config = test_config_with_secret_hex("7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d");
@@ -535,8 +534,8 @@ async fn tls_progressive_truncation_fuzzing_no_panics() {
 
 #[tokio::test]
 async fn mtproto_pure_entropy_fuzzing_no_panics() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let config = test_config_with_secret_hex("8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e");
     let replay_checker = ReplayChecker::new(128, Duration::from_secs(60));
@@ -569,10 +568,8 @@ async fn mtproto_pure_entropy_fuzzing_no_panics() {
 
 #[test]
 fn decode_user_secret_odd_length_hex_rejection() {
-    let _guard = warned_secrets_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_warned_secrets_for_testing();
+    let shared = ProxySharedState::new();
+    clear_warned_secrets_for_testing_in_shared(shared.as_ref());
 
     let mut config = ProxyConfig::default();
     config.access.users.clear();
@@ -581,7 +578,7 @@ fn decode_user_secret_odd_length_hex_rejection() {
         "1234567890123456789012345678901".to_string(),
     );
 
-    let decoded = decode_user_secrets(&config, None);
+    let decoded = decode_user_secrets_in(shared.as_ref(), &config, None);
     assert!(
         decoded.is_empty(),
         "Odd-length hex string must be gracefully rejected by hex::decode without unwrapping"
@@ -590,10 +587,10 @@ fn decode_user_secret_odd_length_hex_rejection() {
 
 #[test]
 fn saturation_grace_pre_existing_high_fail_streak_immediate_throttle() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
-    let state = auth_probe_state_map();
+    let state = auth_probe_state_for_testing_in_shared(shared.as_ref());
     let peer_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 112));
     let now = Instant::now();
 
@@ -608,7 +605,7 @@ fn saturation_grace_pre_existing_high_fail_streak_immediate_throttle() {
     );
 
     {
-        let mut guard = auth_probe_saturation_state_lock();
+        let mut guard = auth_probe_saturation_state_lock_for_testing_in_shared(shared.as_ref());
         *guard = Some(AuthProbeSaturationState {
             fail_streak: AUTH_PROBE_BACKOFF_START_FAILS,
             blocked_until: now + Duration::from_secs(5),
@@ -616,7 +613,7 @@ fn saturation_grace_pre_existing_high_fail_streak_immediate_throttle() {
         });
     }
 
-    let is_throttled = auth_probe_should_apply_preauth_throttle(peer_ip, now);
+    let is_throttled = auth_probe_should_apply_preauth_throttle_in(shared.as_ref(), peer_ip, now);
     assert!(
         is_throttled,
         "A peer with a pre-existing high fail streak must be immediately throttled when saturation begins, receiving no unearned grace period"
@@ -625,21 +622,22 @@ fn saturation_grace_pre_existing_high_fail_streak_immediate_throttle() {
 
 #[test]
 fn auth_probe_saturation_note_resets_retention_window() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let base_time = Instant::now();
 
-    auth_probe_note_saturation(base_time);
+    auth_probe_note_saturation_in(shared.as_ref(), base_time);
     let later = base_time + Duration::from_secs(AUTH_PROBE_TRACK_RETENTION_SECS - 1);
-    auth_probe_note_saturation(later);
+    auth_probe_note_saturation_in(shared.as_ref(), later);
 
     let check_time = base_time + Duration::from_secs(AUTH_PROBE_TRACK_RETENTION_SECS + 5);
 
     // This call may return false if backoff has elapsed, but it must not clear
     // the saturation state because `later` refreshed last_seen.
-    let _ = auth_probe_saturation_is_throttled_at_for_testing(check_time);
-    let guard = auth_probe_saturation_state_lock();
+    let _ =
+        auth_probe_saturation_is_throttled_at_for_testing_in_shared(shared.as_ref(), check_time);
+    let guard = auth_probe_saturation_state_lock_for_testing_in_shared(shared.as_ref());
     assert!(
         guard.is_some(),
         "Ongoing saturation notes must refresh last_seen so saturation state remains retained past the original window"

@@ -360,73 +360,103 @@ async fn stress_many_idle_sessions_fail_closed_without_hang() {
 
 #[test]
 fn pressure_evicts_oldest_idle_candidate_with_deterministic_ordering() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    assert!(mark_relay_idle_candidate(10));
-    assert!(mark_relay_idle_candidate(11));
-    assert_eq!(oldest_relay_idle_candidate(), Some(10));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 10));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 11));
+    assert_eq!(
+        oldest_relay_idle_candidate_for_testing(shared.as_ref()),
+        Some(10)
+    );
 
-    note_relay_pressure_event();
+    note_relay_pressure_event_for_testing(shared.as_ref());
 
     let mut seen_for_newer = 0u64;
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(11, &mut seen_for_newer, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            11,
+            &mut seen_for_newer,
+            &stats
+        ),
         "newer idle candidate must not be evicted while older candidate exists"
     );
-    assert_eq!(oldest_relay_idle_candidate(), Some(10));
+    assert_eq!(
+        oldest_relay_idle_candidate_for_testing(shared.as_ref()),
+        Some(10)
+    );
 
     let mut seen_for_oldest = 0u64;
     assert!(
-        maybe_evict_idle_candidate_on_pressure(10, &mut seen_for_oldest, &stats),
+        maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            10,
+            &mut seen_for_oldest,
+            &stats
+        ),
         "oldest idle candidate must be evicted first under pressure"
     );
-    assert_eq!(oldest_relay_idle_candidate(), Some(11));
+    assert_eq!(
+        oldest_relay_idle_candidate_for_testing(shared.as_ref()),
+        Some(11)
+    );
     assert_eq!(stats.get_relay_pressure_evict_total(), 1);
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn pressure_does_not_evict_without_new_pressure_signal() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    assert!(mark_relay_idle_candidate(21));
-    let mut seen = relay_pressure_event_seq();
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 21));
+    let mut seen = relay_pressure_event_seq_for_testing(shared.as_ref());
 
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(21, &mut seen, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(shared.as_ref(), 21, &mut seen, &stats),
         "without new pressure signal, candidate must stay"
     );
     assert_eq!(stats.get_relay_pressure_evict_total(), 0);
-    assert_eq!(oldest_relay_idle_candidate(), Some(21));
+    assert_eq!(
+        oldest_relay_idle_candidate_for_testing(shared.as_ref()),
+        Some(21)
+    );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn stress_pressure_eviction_preserves_fifo_across_many_candidates() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
     let mut seen_per_conn = std::collections::HashMap::new();
     for conn_id in 1000u64..1064u64 {
-        assert!(mark_relay_idle_candidate(conn_id));
+        assert!(mark_relay_idle_candidate_for_testing(
+            shared.as_ref(),
+            conn_id
+        ));
         seen_per_conn.insert(conn_id, 0u64);
     }
 
     for expected in 1000u64..1064u64 {
-        note_relay_pressure_event();
+        note_relay_pressure_event_for_testing(shared.as_ref());
 
         let mut seen = *seen_per_conn
             .get(&expected)
             .expect("per-conn pressure cursor must exist");
         assert!(
-            maybe_evict_idle_candidate_on_pressure(expected, &mut seen, &stats),
+            maybe_evict_idle_candidate_on_pressure_for_testing(
+                shared.as_ref(),
+                expected,
+                &mut seen,
+                &stats
+            ),
             "expected conn_id {expected} must be evicted next by deterministic FIFO ordering"
         );
         seen_per_conn.insert(expected, seen);
@@ -436,33 +466,51 @@ fn stress_pressure_eviction_preserves_fifo_across_many_candidates() {
         } else {
             Some(expected + 1)
         };
-        assert_eq!(oldest_relay_idle_candidate(), next);
+        assert_eq!(
+            oldest_relay_idle_candidate_for_testing(shared.as_ref()),
+            next
+        );
     }
 
     assert_eq!(stats.get_relay_pressure_evict_total(), 64);
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_single_pressure_event_must_not_evict_more_than_one_candidate() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    assert!(mark_relay_idle_candidate(301));
-    assert!(mark_relay_idle_candidate(302));
-    assert!(mark_relay_idle_candidate(303));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 301));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 302));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 303));
 
     let mut seen_301 = 0u64;
     let mut seen_302 = 0u64;
     let mut seen_303 = 0u64;
 
     // Single pressure event should authorize at most one eviction globally.
-    note_relay_pressure_event();
+    note_relay_pressure_event_for_testing(shared.as_ref());
 
-    let evicted_301 = maybe_evict_idle_candidate_on_pressure(301, &mut seen_301, &stats);
-    let evicted_302 = maybe_evict_idle_candidate_on_pressure(302, &mut seen_302, &stats);
-    let evicted_303 = maybe_evict_idle_candidate_on_pressure(303, &mut seen_303, &stats);
+    let evicted_301 = maybe_evict_idle_candidate_on_pressure_for_testing(
+        shared.as_ref(),
+        301,
+        &mut seen_301,
+        &stats,
+    );
+    let evicted_302 = maybe_evict_idle_candidate_on_pressure_for_testing(
+        shared.as_ref(),
+        302,
+        &mut seen_302,
+        &stats,
+    );
+    let evicted_303 = maybe_evict_idle_candidate_on_pressure_for_testing(
+        shared.as_ref(),
+        303,
+        &mut seen_303,
+        &stats,
+    );
 
     let evicted_total = [evicted_301, evicted_302, evicted_303]
         .iter()
@@ -474,30 +522,40 @@ fn blackhat_single_pressure_event_must_not_evict_more_than_one_candidate() {
         "single pressure event must not cascade-evict multiple idle candidates"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_pressure_counter_must_track_global_budget_not_per_session_cursor() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    assert!(mark_relay_idle_candidate(401));
-    assert!(mark_relay_idle_candidate(402));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 401));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 402));
 
     let mut seen_oldest = 0u64;
     let mut seen_next = 0u64;
 
-    note_relay_pressure_event();
+    note_relay_pressure_event_for_testing(shared.as_ref());
 
     assert!(
-        maybe_evict_idle_candidate_on_pressure(401, &mut seen_oldest, &stats),
+        maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            401,
+            &mut seen_oldest,
+            &stats
+        ),
         "oldest candidate must consume pressure budget first"
     );
 
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(402, &mut seen_next, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            402,
+            &mut seen_next,
+            &stats
+        ),
         "next candidate must not consume the same pressure budget"
     );
 
@@ -507,47 +565,67 @@ fn blackhat_pressure_counter_must_track_global_budget_not_per_session_cursor() {
         "single pressure budget must produce exactly one eviction"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_stale_pressure_before_idle_mark_must_not_trigger_eviction() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
     // Pressure happened before any idle candidate existed.
-    note_relay_pressure_event();
-    assert!(mark_relay_idle_candidate(501));
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 501));
 
     let mut seen = 0u64;
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(501, &mut seen, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            501,
+            &mut seen,
+            &stats
+        ),
         "stale pressure (before soft-idle mark) must not evict newly marked candidate"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_stale_pressure_must_not_evict_any_of_newly_marked_batch() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    note_relay_pressure_event();
-    assert!(mark_relay_idle_candidate(511));
-    assert!(mark_relay_idle_candidate(512));
-    assert!(mark_relay_idle_candidate(513));
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 511));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 512));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 513));
 
     let mut seen_511 = 0u64;
     let mut seen_512 = 0u64;
     let mut seen_513 = 0u64;
 
     let evicted = [
-        maybe_evict_idle_candidate_on_pressure(511, &mut seen_511, &stats),
-        maybe_evict_idle_candidate_on_pressure(512, &mut seen_512, &stats),
-        maybe_evict_idle_candidate_on_pressure(513, &mut seen_513, &stats),
+        maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            511,
+            &mut seen_511,
+            &stats,
+        ),
+        maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            512,
+            &mut seen_512,
+            &stats,
+        ),
+        maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            513,
+            &mut seen_513,
+            &stats,
+        ),
     ]
     .iter()
     .filter(|value| **value)
@@ -558,111 +636,118 @@ fn blackhat_stale_pressure_must_not_evict_any_of_newly_marked_batch() {
         "stale pressure event must not evict any candidate from a newly marked batch"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_stale_pressure_seen_without_candidates_must_be_globally_invalidated() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    note_relay_pressure_event();
+    note_relay_pressure_event_for_testing(shared.as_ref());
 
     // Session A observed pressure while there were no candidates.
     let mut seen_a = 0u64;
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(999_001, &mut seen_a, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            999_001,
+            &mut seen_a,
+            &stats
+        ),
         "no candidate existed, so no eviction is possible"
     );
 
     // Candidate appears later; Session B must not be able to consume stale pressure.
-    assert!(mark_relay_idle_candidate(521));
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 521));
     let mut seen_b = 0u64;
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(521, &mut seen_b, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            521,
+            &mut seen_b,
+            &stats
+        ),
         "once pressure is observed with empty candidate set, it must not be replayed later"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_stale_pressure_must_not_survive_candidate_churn() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
     let stats = Stats::new();
 
-    note_relay_pressure_event();
-    assert!(mark_relay_idle_candidate(531));
-    clear_relay_idle_candidate(531);
-    assert!(mark_relay_idle_candidate(532));
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 531));
+    clear_relay_idle_candidate_for_testing(shared.as_ref(), 531);
+    assert!(mark_relay_idle_candidate_for_testing(shared.as_ref(), 532));
 
     let mut seen = 0u64;
     assert!(
-        !maybe_evict_idle_candidate_on_pressure(532, &mut seen, &stats),
+        !maybe_evict_idle_candidate_on_pressure_for_testing(
+            shared.as_ref(),
+            532,
+            &mut seen,
+            &stats
+        ),
         "stale pressure must not survive clear+remark churn cycles"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_pressure_seq_saturation_must_not_disable_future_pressure_accounting() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 
     {
-        let mut guard = relay_idle_candidate_registry()
-            .lock()
-            .expect("registry lock must be available");
-        guard.pressure_event_seq = u64::MAX;
-        guard.pressure_consumed_seq = u64::MAX - 1;
+        set_relay_pressure_state_for_testing(shared.as_ref(), u64::MAX, u64::MAX - 1);
     }
 
     // A new pressure event should still be representable; saturating at MAX creates a permanent lockout.
-    note_relay_pressure_event();
-    let after = relay_pressure_event_seq();
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    let after = relay_pressure_event_seq_for_testing(shared.as_ref());
     assert_ne!(
         after,
         u64::MAX,
         "pressure sequence saturation must not permanently freeze event progression"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[test]
 fn blackhat_pressure_seq_saturation_must_not_break_multiple_distinct_events() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 
     {
-        let mut guard = relay_idle_candidate_registry()
-            .lock()
-            .expect("registry lock must be available");
-        guard.pressure_event_seq = u64::MAX;
-        guard.pressure_consumed_seq = u64::MAX;
+        set_relay_pressure_state_for_testing(shared.as_ref(), u64::MAX, u64::MAX);
     }
 
-    note_relay_pressure_event();
-    let first = relay_pressure_event_seq();
-    note_relay_pressure_event();
-    let second = relay_pressure_event_seq();
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    let first = relay_pressure_event_seq_for_testing(shared.as_ref());
+    note_relay_pressure_event_for_testing(shared.as_ref());
+    let second = relay_pressure_event_seq_for_testing(shared.as_ref());
 
     assert!(
         second > first,
         "distinct pressure events must remain distinguishable even at sequence boundary"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn integration_race_single_pressure_event_allows_at_most_one_eviction_under_parallel_claims()
 {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 
     let stats = Arc::new(Stats::new());
     let sessions = 16usize;
@@ -671,20 +756,28 @@ async fn integration_race_single_pressure_event_allows_at_most_one_eviction_unde
     let mut seen_per_session = vec![0u64; sessions];
 
     for conn_id in &conn_ids {
-        assert!(mark_relay_idle_candidate(*conn_id));
+        assert!(mark_relay_idle_candidate_for_testing(
+            shared.as_ref(),
+            *conn_id
+        ));
     }
 
     for round in 0..rounds {
-        note_relay_pressure_event();
+        note_relay_pressure_event_for_testing(shared.as_ref());
 
         let mut joins = Vec::with_capacity(sessions);
         for (idx, conn_id) in conn_ids.iter().enumerate() {
             let mut seen = seen_per_session[idx];
             let conn_id = *conn_id;
             let stats = stats.clone();
+            let shared = shared.clone();
             joins.push(tokio::spawn(async move {
-                let evicted =
-                    maybe_evict_idle_candidate_on_pressure(conn_id, &mut seen, stats.as_ref());
+                let evicted = maybe_evict_idle_candidate_on_pressure_for_testing(
+                    shared.as_ref(),
+                    conn_id,
+                    &mut seen,
+                    stats.as_ref(),
+                );
                 (idx, conn_id, seen, evicted)
             }));
         }
@@ -706,7 +799,7 @@ async fn integration_race_single_pressure_event_allows_at_most_one_eviction_unde
         );
         if let Some(conn) = evicted_conn {
             assert!(
-                mark_relay_idle_candidate(conn),
+                mark_relay_idle_candidate_for_testing(shared.as_ref(), conn),
                 "round {round}: evicted conn must be re-markable as idle candidate"
             );
         }
@@ -721,13 +814,13 @@ async fn integration_race_single_pressure_event_allows_at_most_one_eviction_unde
         "parallel race must still observe at least one successful eviction"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalidation_and_budget() {
-    let _guard = relay_idle_pressure_test_scope();
-    clear_relay_idle_pressure_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 
     let stats = Arc::new(Stats::new());
     let sessions = 12usize;
@@ -736,7 +829,10 @@ async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalida
     let mut seen_per_session = vec![0u64; sessions];
 
     for conn_id in &conn_ids {
-        assert!(mark_relay_idle_candidate(*conn_id));
+        assert!(mark_relay_idle_candidate_for_testing(
+            shared.as_ref(),
+            *conn_id
+        ));
     }
 
     let mut expected_total_evictions = 0u64;
@@ -745,20 +841,25 @@ async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalida
         let empty_phase = round % 5 == 0;
         if empty_phase {
             for conn_id in &conn_ids {
-                clear_relay_idle_candidate(*conn_id);
+                clear_relay_idle_candidate_for_testing(shared.as_ref(), *conn_id);
             }
         }
 
-        note_relay_pressure_event();
+        note_relay_pressure_event_for_testing(shared.as_ref());
 
         let mut joins = Vec::with_capacity(sessions);
         for (idx, conn_id) in conn_ids.iter().enumerate() {
             let mut seen = seen_per_session[idx];
             let conn_id = *conn_id;
             let stats = stats.clone();
+            let shared = shared.clone();
             joins.push(tokio::spawn(async move {
-                let evicted =
-                    maybe_evict_idle_candidate_on_pressure(conn_id, &mut seen, stats.as_ref());
+                let evicted = maybe_evict_idle_candidate_on_pressure_for_testing(
+                    shared.as_ref(),
+                    conn_id,
+                    &mut seen,
+                    stats.as_ref(),
+                );
                 (idx, conn_id, seen, evicted)
             }));
         }
@@ -780,7 +881,10 @@ async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalida
                 "round {round}: empty candidate phase must not allow stale-pressure eviction"
             );
             for conn_id in &conn_ids {
-                assert!(mark_relay_idle_candidate(*conn_id));
+                assert!(mark_relay_idle_candidate_for_testing(
+                    shared.as_ref(),
+                    *conn_id
+                ));
             }
         } else {
             assert!(
@@ -789,7 +893,10 @@ async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalida
             );
             if let Some(conn_id) = evicted_conn {
                 expected_total_evictions = expected_total_evictions.saturating_add(1);
-                assert!(mark_relay_idle_candidate(conn_id));
+                assert!(mark_relay_idle_candidate_for_testing(
+                    shared.as_ref(),
+                    conn_id
+                ));
             }
         }
     }
@@ -800,5 +907,5 @@ async fn integration_race_burst_pressure_with_churn_preserves_empty_set_invalida
         "global pressure eviction counter must match observed per-round successful consumes"
     );
 
-    clear_relay_idle_pressure_state_for_testing();
+    clear_relay_idle_pressure_state_for_testing_in_shared(shared.as_ref());
 }

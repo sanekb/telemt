@@ -67,16 +67,10 @@ fn test_config_with_secret_hex(secret_hex: &str) -> ProxyConfig {
     cfg
 }
 
-fn auth_probe_test_guard() -> MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[tokio::test]
 async fn mtproto_handshake_duplicate_digest_is_replayed_on_second_attempt() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "11223344556677889900aabbccddeeff";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -110,13 +104,13 @@ async fn mtproto_handshake_duplicate_digest_is_replayed_on_second_attempt() {
     .await;
     assert!(matches!(second, HandshakeResult::BadClient { .. }));
 
-    clear_auth_probe_state_for_testing();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[tokio::test]
 async fn mtproto_handshake_fuzz_corpus_never_panics_and_stays_fail_closed() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "00112233445566778899aabbccddeeff";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 1);
@@ -178,13 +172,13 @@ async fn mtproto_handshake_fuzz_corpus_never_panics_and_stays_fail_closed() {
         );
     }
 
-    clear_auth_probe_state_for_testing();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 }
 
 #[tokio::test]
 async fn mtproto_handshake_mixed_corpus_never_panics_and_exact_duplicates_are_rejected() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "99887766554433221100ffeeddccbbaa";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 4);
@@ -274,5 +268,5 @@ async fn mtproto_handshake_mixed_corpus_never_panics_and_exact_duplicates_are_re
         );
     }
 
-    clear_auth_probe_state_for_testing();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 }

@@ -44,12 +44,6 @@ fn make_valid_mtproto_handshake(
     handshake
 }
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn test_config_with_secret_hex(secret_hex: &str) -> ProxyConfig {
     let mut cfg = ProxyConfig::default();
     cfg.access.users.clear();
@@ -67,8 +61,8 @@ fn test_config_with_secret_hex(secret_hex: &str) -> ProxyConfig {
 
 #[tokio::test]
 async fn mtproto_handshake_bit_flip_anywhere_rejected() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "11223344556677889900aabbccddeeff";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -181,26 +175,26 @@ async fn mtproto_handshake_timing_neutrality_mocked() {
 
 #[tokio::test]
 async fn auth_probe_throttle_saturation_stress() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let now = Instant::now();
 
     // Record enough failures for one IP to trigger backoff
     let target_ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
     for _ in 0..AUTH_PROBE_BACKOFF_START_FAILS {
-        auth_probe_record_failure(target_ip, now);
+        auth_probe_record_failure_in(shared.as_ref(), target_ip, now);
     }
 
-    assert!(auth_probe_is_throttled(target_ip, now));
+    assert!(auth_probe_is_throttled_in(shared.as_ref(), target_ip, now));
 
     // Stress test with many unique IPs
     for i in 0..500u32 {
         let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, (i % 256) as u8));
-        auth_probe_record_failure(ip, now);
+        auth_probe_record_failure_in(shared.as_ref(), ip, now);
     }
 
-    let tracked = AUTH_PROBE_STATE.get().map(|state| state.len()).unwrap_or(0);
+    let tracked = auth_probe_state_for_testing_in_shared(shared.as_ref()).len();
     assert!(
         tracked <= AUTH_PROBE_TRACK_MAX_ENTRIES,
         "auth probe state grew past hard cap: {tracked} > {AUTH_PROBE_TRACK_MAX_ENTRIES}"
@@ -209,8 +203,8 @@ async fn auth_probe_throttle_saturation_stress() {
 
 #[tokio::test]
 async fn mtproto_handshake_abridged_prefix_rejected() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let mut handshake = [0x5Au8; HANDSHAKE_LEN];
     handshake[0] = 0xef; // Abridged prefix
@@ -235,8 +229,8 @@ async fn mtproto_handshake_abridged_prefix_rejected() {
 
 #[tokio::test]
 async fn mtproto_handshake_preferred_user_mismatch_continues() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret1_hex = "11111111111111111111111111111111";
     let secret2_hex = "22222222222222222222222222222222";
@@ -278,8 +272,8 @@ async fn mtproto_handshake_preferred_user_mismatch_continues() {
 
 #[tokio::test]
 async fn mtproto_handshake_concurrent_flood_stability() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "00112233445566778899aabbccddeeff";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 1);
@@ -320,8 +314,8 @@ async fn mtproto_handshake_concurrent_flood_stability() {
 
 #[tokio::test]
 async fn mtproto_replay_is_rejected_across_distinct_peers() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "0123456789abcdeffedcba9876543210";
     let handshake = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -360,8 +354,8 @@ async fn mtproto_replay_is_rejected_across_distinct_peers() {
 
 #[tokio::test]
 async fn mtproto_blackhat_mutation_corpus_never_panics_and_stays_fail_closed() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "89abcdef012345670123456789abcdef";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -405,27 +399,27 @@ async fn mtproto_blackhat_mutation_corpus_never_panics_and_stays_fail_closed() {
 
 #[tokio::test]
 async fn auth_probe_success_clears_throttled_peer_state() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let target_ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 90));
     let now = Instant::now();
     for _ in 0..AUTH_PROBE_BACKOFF_START_FAILS {
-        auth_probe_record_failure(target_ip, now);
+        auth_probe_record_failure_in(shared.as_ref(), target_ip, now);
     }
-    assert!(auth_probe_is_throttled(target_ip, now));
+    assert!(auth_probe_is_throttled_in(shared.as_ref(), target_ip, now));
 
-    auth_probe_record_success(target_ip);
+    auth_probe_record_success_in(shared.as_ref(), target_ip);
     assert!(
-        !auth_probe_is_throttled(target_ip, now + Duration::from_millis(1)),
+        !auth_probe_is_throttled_in(shared.as_ref(), target_ip, now + Duration::from_millis(1)),
         "successful auth must clear per-peer throttle state"
     );
 }
 
 #[tokio::test]
 async fn mtproto_invalid_storm_over_cap_keeps_probe_map_hard_bounded() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "00112233445566778899aabbccddeeff";
     let mut invalid = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -458,7 +452,7 @@ async fn mtproto_invalid_storm_over_cap_keeps_probe_map_hard_bounded() {
         assert!(matches!(res, HandshakeResult::BadClient { .. }));
     }
 
-    let tracked = AUTH_PROBE_STATE.get().map(|state| state.len()).unwrap_or(0);
+    let tracked = auth_probe_state_for_testing_in_shared(shared.as_ref()).len();
     assert!(
         tracked <= AUTH_PROBE_TRACK_MAX_ENTRIES,
         "probe map must remain bounded under invalid storm: {tracked}"
@@ -467,8 +461,8 @@ async fn mtproto_invalid_storm_over_cap_keeps_probe_map_hard_bounded() {
 
 #[tokio::test]
 async fn mtproto_property_style_multi_bit_mutations_fail_closed_or_auth_only() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);
@@ -520,8 +514,8 @@ async fn mtproto_property_style_multi_bit_mutations_fail_closed_or_auth_only() {
 #[tokio::test]
 #[ignore = "heavy soak; run manually"]
 async fn mtproto_blackhat_20k_mutation_soak_never_panics() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let base = make_valid_mtproto_handshake(secret_hex, ProtoTag::Secure, 2);

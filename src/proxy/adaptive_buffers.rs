@@ -24,6 +24,8 @@ const DIRECT_S2C_CAP_BYTES: usize = 512 * 1024;
 const ME_FRAMES_CAP: usize = 96;
 const ME_BYTES_CAP: usize = 384 * 1024;
 const ME_DELAY_MIN_US: u64 = 150;
+const MAX_USER_PROFILES_ENTRIES: usize = 50_000;
+const MAX_USER_KEY_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AdaptiveTier {
@@ -234,32 +236,50 @@ fn profiles() -> &'static DashMap<String, UserAdaptiveProfile> {
 }
 
 pub fn seed_tier_for_user(user: &str) -> AdaptiveTier {
+    if user.len() > MAX_USER_KEY_BYTES {
+        return AdaptiveTier::Base;
+    }
     let now = Instant::now();
     if let Some(entry) = profiles().get(user) {
-        let value = entry.value();
-        if now.duration_since(value.seen_at) <= PROFILE_TTL {
+        let value = *entry.value();
+        drop(entry);
+        if now.saturating_duration_since(value.seen_at) <= PROFILE_TTL {
             return value.tier;
         }
+        profiles().remove_if(user, |_, v| {
+            now.saturating_duration_since(v.seen_at) > PROFILE_TTL
+        });
     }
     AdaptiveTier::Base
 }
 
 pub fn record_user_tier(user: &str, tier: AdaptiveTier) {
-    let now = Instant::now();
-    if let Some(mut entry) = profiles().get_mut(user) {
-        let existing = *entry;
-        let effective = if now.duration_since(existing.seen_at) > PROFILE_TTL {
-            tier
-        } else {
-            max(existing.tier, tier)
-        };
-        *entry = UserAdaptiveProfile {
-            tier: effective,
-            seen_at: now,
-        };
+    if user.len() > MAX_USER_KEY_BYTES {
         return;
     }
-    profiles().insert(user.to_string(), UserAdaptiveProfile { tier, seen_at: now });
+    let now = Instant::now();
+    let mut was_vacant = false;
+    match profiles().entry(user.to_string()) {
+        dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+            let existing = *entry.get();
+            let effective = if now.saturating_duration_since(existing.seen_at) > PROFILE_TTL {
+                tier
+            } else {
+                max(existing.tier, tier)
+            };
+            entry.insert(UserAdaptiveProfile {
+                tier: effective,
+                seen_at: now,
+            });
+        }
+        dashmap::mapref::entry::Entry::Vacant(slot) => {
+            slot.insert(UserAdaptiveProfile { tier, seen_at: now });
+            was_vacant = true;
+        }
+    }
+    if was_vacant && profiles().len() > MAX_USER_PROFILES_ENTRIES {
+        profiles().retain(|_, v| now.saturating_duration_since(v.seen_at) <= PROFILE_TTL);
+    }
 }
 
 pub fn direct_copy_buffers_for_tier(
@@ -309,6 +329,14 @@ fn scale(base: usize, numerator: usize, denominator: usize, cap: usize) -> usize
         .saturating_div(denominator.max(1));
     scaled.min(cap).max(1)
 }
+
+#[cfg(test)]
+#[path = "tests/adaptive_buffers_security_tests.rs"]
+mod adaptive_buffers_security_tests;
+
+#[cfg(test)]
+#[path = "tests/adaptive_buffers_record_race_security_tests.rs"]
+mod adaptive_buffers_record_race_security_tests;
 
 #[cfg(test)]
 mod tests {

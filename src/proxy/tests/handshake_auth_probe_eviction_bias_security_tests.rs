@@ -3,15 +3,9 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[test]
 fn adversarial_large_state_offsets_escape_first_scan_window() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let base = Instant::now();
     let state_len = 65_536usize;
     let scan_limit = 1_024usize;
@@ -25,7 +19,8 @@ fn adversarial_large_state_offsets_escape_first_scan_window() {
             ((i.wrapping_mul(131)) & 0xff) as u8,
         ));
         let now = base + Duration::from_nanos(i);
-        let start = auth_probe_scan_start_offset(ip, now, state_len, scan_limit);
+        let start =
+            auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, scan_limit);
         if start >= scan_limit {
             saw_offset_outside_first_window = true;
             break;
@@ -40,7 +35,7 @@ fn adversarial_large_state_offsets_escape_first_scan_window() {
 
 #[test]
 fn stress_large_state_offsets_cover_many_scan_windows() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let base = Instant::now();
     let state_len = 65_536usize;
     let scan_limit = 1_024usize;
@@ -54,7 +49,8 @@ fn stress_large_state_offsets_cover_many_scan_windows() {
             ((i.wrapping_mul(17)) & 0xff) as u8,
         ));
         let now = base + Duration::from_micros(i);
-        let start = auth_probe_scan_start_offset(ip, now, state_len, scan_limit);
+        let start =
+            auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, scan_limit);
         covered_windows.insert(start / scan_limit);
     }
 
@@ -68,7 +64,7 @@ fn stress_large_state_offsets_cover_many_scan_windows() {
 
 #[test]
 fn light_fuzz_offset_always_stays_inside_state_len() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
     let mut seed = 0xC0FF_EE12_3456_789Au64;
     let base = Instant::now();
 
@@ -86,7 +82,8 @@ fn light_fuzz_offset_always_stays_inside_state_len() {
         let state_len = ((seed >> 16) as usize % 200_000).saturating_add(1);
         let scan_limit = ((seed >> 40) as usize % 2_048).saturating_add(1);
         let now = base + Duration::from_nanos(seed & 0x0fff);
-        let start = auth_probe_scan_start_offset(ip, now, state_len, scan_limit);
+        let start =
+            auth_probe_scan_start_offset_in(shared.as_ref(), ip, now, state_len, scan_limit);
 
         assert!(
             start < state_len,

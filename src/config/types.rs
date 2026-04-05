@@ -1216,6 +1216,118 @@ impl Default for ApiConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConntrackMode {
+    #[default]
+    Tracked,
+    Notrack,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConntrackBackend {
+    #[default]
+    Auto,
+    Nftables,
+    Iptables,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConntrackPressureProfile {
+    Conservative,
+    #[default]
+    Balanced,
+    Aggressive,
+}
+
+impl ConntrackPressureProfile {
+    pub fn client_first_byte_idle_cap_secs(self) -> u64 {
+        match self {
+            Self::Conservative => 30,
+            Self::Balanced => 20,
+            Self::Aggressive => 10,
+        }
+    }
+
+    pub fn direct_activity_timeout_secs(self) -> u64 {
+        match self {
+            Self::Conservative => 180,
+            Self::Balanced => 120,
+            Self::Aggressive => 60,
+        }
+    }
+
+    pub fn middle_soft_idle_cap_secs(self) -> u64 {
+        match self {
+            Self::Conservative => 60,
+            Self::Balanced => 30,
+            Self::Aggressive => 20,
+        }
+    }
+
+    pub fn middle_hard_idle_cap_secs(self) -> u64 {
+        match self {
+            Self::Conservative => 180,
+            Self::Balanced => 90,
+            Self::Aggressive => 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConntrackControlConfig {
+    /// Enables runtime conntrack-control worker for pressure mitigation.
+    #[serde(default = "default_conntrack_control_enabled")]
+    pub inline_conntrack_control: bool,
+
+    /// Conntrack mode for listener ingress traffic.
+    #[serde(default)]
+    pub mode: ConntrackMode,
+
+    /// Netfilter backend used to reconcile notrack rules.
+    #[serde(default)]
+    pub backend: ConntrackBackend,
+
+    /// Pressure profile for timeout caps under resource saturation.
+    #[serde(default)]
+    pub profile: ConntrackPressureProfile,
+
+    /// Listener IP allow-list for hybrid mode.
+    /// Ignored in tracked/notrack mode.
+    #[serde(default)]
+    pub hybrid_listener_ips: Vec<IpAddr>,
+
+    /// Pressure high watermark as percentage.
+    #[serde(default = "default_conntrack_pressure_high_watermark_pct")]
+    pub pressure_high_watermark_pct: u8,
+
+    /// Pressure low watermark as percentage.
+    #[serde(default = "default_conntrack_pressure_low_watermark_pct")]
+    pub pressure_low_watermark_pct: u8,
+
+    /// Maximum conntrack delete operations per second.
+    #[serde(default = "default_conntrack_delete_budget_per_sec")]
+    pub delete_budget_per_sec: u64,
+}
+
+impl Default for ConntrackControlConfig {
+    fn default() -> Self {
+        Self {
+            inline_conntrack_control: default_conntrack_control_enabled(),
+            mode: ConntrackMode::default(),
+            backend: ConntrackBackend::default(),
+            profile: ConntrackPressureProfile::default(),
+            hybrid_listener_ips: Vec::new(),
+            pressure_high_watermark_pct: default_conntrack_pressure_high_watermark_pct(),
+            pressure_low_watermark_pct: default_conntrack_pressure_low_watermark_pct(),
+            delete_budget_per_sec: default_conntrack_delete_budget_per_sec(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "default_port")]
@@ -1291,6 +1403,10 @@ pub struct ServerConfig {
     /// `0` keeps legacy unbounded wait behavior.
     #[serde(default = "default_accept_permit_timeout_ms")]
     pub accept_permit_timeout_ms: u64,
+
+    /// Runtime conntrack control and pressure policy.
+    #[serde(default)]
+    pub conntrack_control: ConntrackControlConfig,
 }
 
 impl Default for ServerConfig {
@@ -1313,6 +1429,7 @@ impl Default for ServerConfig {
             listen_backlog: default_listen_backlog(),
             max_connections: default_server_max_connections(),
             accept_permit_timeout_ms: default_accept_permit_timeout_ms(),
+            conntrack_control: ConntrackControlConfig::default(),
         }
     }
 }

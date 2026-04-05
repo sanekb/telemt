@@ -1,6 +1,6 @@
 use super::*;
+use crate::stats::Stats;
 use crate::stream::BufferPool;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::time::{Duration as TokioDuration, timeout};
 
@@ -15,32 +15,30 @@ fn make_pooled_payload(data: &[u8]) -> PooledBuffer {
 #[test]
 #[ignore = "Tracking for M-04: Verify should_emit_full_desync returns true on first occurrence and false on duplicate within window"]
 fn should_emit_full_desync_filters_duplicates() {
-    let _guard = desync_dedup_test_lock()
-        .lock()
-        .expect("desync dedup test lock must be available");
-    clear_desync_dedup_for_testing();
+    let shared = ProxySharedState::new();
+    clear_desync_dedup_for_testing_in_shared(shared.as_ref());
 
     let key = 0x4D04_0000_0000_0001_u64;
     let base = Instant::now();
 
     assert!(
-        should_emit_full_desync(key, false, base),
+        should_emit_full_desync_for_testing(shared.as_ref(), key, false, base),
         "first occurrence must emit full forensic record"
     );
     assert!(
-        !should_emit_full_desync(key, false, base),
+        !should_emit_full_desync_for_testing(shared.as_ref(), key, false, base),
         "duplicate at same timestamp must be suppressed"
     );
 
     let within_window = base + DESYNC_DEDUP_WINDOW - TokioDuration::from_millis(1);
     assert!(
-        !should_emit_full_desync(key, false, within_window),
+        !should_emit_full_desync_for_testing(shared.as_ref(), key, false, within_window),
         "duplicate strictly inside dedup window must stay suppressed"
     );
 
     let on_window_edge = base + DESYNC_DEDUP_WINDOW;
     assert!(
-        should_emit_full_desync(key, false, on_window_edge),
+        should_emit_full_desync_for_testing(shared.as_ref(), key, false, on_window_edge),
         "duplicate at window boundary must re-emit and refresh"
     );
 }
@@ -48,39 +46,34 @@ fn should_emit_full_desync_filters_duplicates() {
 #[test]
 #[ignore = "Tracking for M-04: Verify desync dedup eviction behaves correctly under map-full condition"]
 fn desync_dedup_eviction_under_map_full_condition() {
-    let _guard = desync_dedup_test_lock()
-        .lock()
-        .expect("desync dedup test lock must be available");
-    clear_desync_dedup_for_testing();
+    let shared = ProxySharedState::new();
+    clear_desync_dedup_for_testing_in_shared(shared.as_ref());
 
     let base = Instant::now();
     for key in 0..DESYNC_DEDUP_MAX_ENTRIES as u64 {
         assert!(
-            should_emit_full_desync(key, false, base),
+            should_emit_full_desync_for_testing(shared.as_ref(), key, false, base),
             "unique key should be inserted while warming dedup cache"
         );
     }
 
-    let dedup = DESYNC_DEDUP
-        .get()
-        .expect("dedup map must exist after warm-up insertions");
     assert_eq!(
-        dedup.len(),
+        desync_dedup_len_for_testing(shared.as_ref()),
         DESYNC_DEDUP_MAX_ENTRIES,
         "cache warm-up must reach exact hard cap"
     );
 
-    let before_keys: HashSet<u64> = dedup.iter().map(|entry| *entry.key()).collect();
+    let before_keys = desync_dedup_keys_for_testing(shared.as_ref());
     let newcomer_key = 0x4D04_FFFF_FFFF_0001_u64;
 
     assert!(
-        should_emit_full_desync(newcomer_key, false, base),
+        should_emit_full_desync_for_testing(shared.as_ref(), newcomer_key, false, base),
         "first newcomer at map-full must emit under bounded full-cache gate"
     );
 
-    let after_keys: HashSet<u64> = dedup.iter().map(|entry| *entry.key()).collect();
+    let after_keys = desync_dedup_keys_for_testing(shared.as_ref());
     assert_eq!(
-        dedup.len(),
+        desync_dedup_len_for_testing(shared.as_ref()),
         DESYNC_DEDUP_MAX_ENTRIES,
         "map-full insertion must preserve hard capacity bound"
     );
@@ -101,7 +94,7 @@ fn desync_dedup_eviction_under_map_full_condition() {
     );
 
     assert!(
-        !should_emit_full_desync(newcomer_key, false, base),
+        !should_emit_full_desync_for_testing(shared.as_ref(), newcomer_key, false, base),
         "immediate duplicate newcomer must remain suppressed"
     );
 }
@@ -119,6 +112,7 @@ async fn c2me_channel_full_path_yields_then_sends() {
     .expect("priming queue with one frame must succeed");
 
     let tx2 = tx.clone();
+    let stats = Stats::default();
     let producer = tokio::spawn(async move {
         enqueue_c2me_command(
             &tx2,
@@ -127,6 +121,7 @@ async fn c2me_channel_full_path_yields_then_sends() {
                 flags: 2,
             },
             None,
+            &stats,
         )
         .await
     });

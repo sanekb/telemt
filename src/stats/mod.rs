@@ -91,6 +91,17 @@ pub struct Stats {
     current_connections_direct: AtomicU64,
     current_connections_me: AtomicU64,
     handshake_timeouts: AtomicU64,
+    accept_permit_timeout_total: AtomicU64,
+    conntrack_control_enabled_gauge: AtomicBool,
+    conntrack_control_available_gauge: AtomicBool,
+    conntrack_pressure_active_gauge: AtomicBool,
+    conntrack_event_queue_depth_gauge: AtomicU64,
+    conntrack_rule_apply_ok_gauge: AtomicBool,
+    conntrack_delete_attempt_total: AtomicU64,
+    conntrack_delete_success_total: AtomicU64,
+    conntrack_delete_not_found_total: AtomicU64,
+    conntrack_delete_error_total: AtomicU64,
+    conntrack_close_event_drop_total: AtomicU64,
     upstream_connect_attempt_total: AtomicU64,
     upstream_connect_success_total: AtomicU64,
     upstream_connect_fail_total: AtomicU64,
@@ -200,6 +211,14 @@ pub struct Stats {
     me_d2c_flush_duration_us_bucket_1001_5000: AtomicU64,
     me_d2c_flush_duration_us_bucket_5001_20000: AtomicU64,
     me_d2c_flush_duration_us_bucket_gt_20000: AtomicU64,
+    // Buffer pool gauges
+    buffer_pool_pooled_gauge: AtomicU64,
+    buffer_pool_allocated_gauge: AtomicU64,
+    buffer_pool_in_use_gauge: AtomicU64,
+    // C2ME enqueue observability
+    me_c2me_send_full_total: AtomicU64,
+    me_c2me_send_high_water_total: AtomicU64,
+    me_c2me_send_timeout_total: AtomicU64,
     me_d2c_batch_timeout_armed_total: AtomicU64,
     me_d2c_batch_timeout_fired_total: AtomicU64,
     me_writer_pick_sorted_rr_success_try_total: AtomicU64,
@@ -520,6 +539,74 @@ impl Stats {
             self.handshake_timeouts.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    pub fn increment_accept_permit_timeout_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.accept_permit_timeout_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn set_conntrack_control_enabled(&self, enabled: bool) {
+        self.conntrack_control_enabled_gauge
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn set_conntrack_control_available(&self, available: bool) {
+        self.conntrack_control_available_gauge
+            .store(available, Ordering::Relaxed);
+    }
+
+    pub fn set_conntrack_pressure_active(&self, active: bool) {
+        self.conntrack_pressure_active_gauge
+            .store(active, Ordering::Relaxed);
+    }
+
+    pub fn set_conntrack_event_queue_depth(&self, depth: u64) {
+        self.conntrack_event_queue_depth_gauge
+            .store(depth, Ordering::Relaxed);
+    }
+
+    pub fn set_conntrack_rule_apply_ok(&self, ok: bool) {
+        self.conntrack_rule_apply_ok_gauge
+            .store(ok, Ordering::Relaxed);
+    }
+
+    pub fn increment_conntrack_delete_attempt_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.conntrack_delete_attempt_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_conntrack_delete_success_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.conntrack_delete_success_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_conntrack_delete_not_found_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.conntrack_delete_not_found_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_conntrack_delete_error_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.conntrack_delete_error_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_conntrack_close_event_drop_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.conntrack_close_event_drop_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn increment_upstream_connect_attempt_total(&self) {
         if self.telemetry_core_enabled() {
             self.upstream_connect_attempt_total
@@ -1414,6 +1501,37 @@ impl Stats {
                 .store(value, Ordering::Relaxed);
         }
     }
+
+    pub fn set_buffer_pool_gauges(&self, pooled: usize, allocated: usize, in_use: usize) {
+        if self.telemetry_me_allows_normal() {
+            self.buffer_pool_pooled_gauge
+                .store(pooled as u64, Ordering::Relaxed);
+            self.buffer_pool_allocated_gauge
+                .store(allocated as u64, Ordering::Relaxed);
+            self.buffer_pool_in_use_gauge
+                .store(in_use as u64, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_me_c2me_send_full_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.me_c2me_send_full_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_me_c2me_send_high_water_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.me_c2me_send_high_water_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn increment_me_c2me_send_timeout_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.me_c2me_send_timeout_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
     pub fn increment_me_floor_cap_block_total(&self) {
         if self.telemetry_me_allows_normal() {
             self.me_floor_cap_block_total
@@ -1438,6 +1556,9 @@ impl Stats {
     pub fn get_connects_bad(&self) -> u64 {
         self.connects_bad.load(Ordering::Relaxed)
     }
+    pub fn get_accept_permit_timeout_total(&self) -> u64 {
+        self.accept_permit_timeout_total.load(Ordering::Relaxed)
+    }
     pub fn get_current_connections_direct(&self) -> u64 {
         self.current_connections_direct.load(Ordering::Relaxed)
     }
@@ -1447,6 +1568,40 @@ impl Stats {
     pub fn get_current_connections_total(&self) -> u64 {
         self.get_current_connections_direct()
             .saturating_add(self.get_current_connections_me())
+    }
+    pub fn get_conntrack_control_enabled(&self) -> bool {
+        self.conntrack_control_enabled_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_control_available(&self) -> bool {
+        self.conntrack_control_available_gauge
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_pressure_active(&self) -> bool {
+        self.conntrack_pressure_active_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_event_queue_depth(&self) -> u64 {
+        self.conntrack_event_queue_depth_gauge
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_rule_apply_ok(&self) -> bool {
+        self.conntrack_rule_apply_ok_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_delete_attempt_total(&self) -> u64 {
+        self.conntrack_delete_attempt_total.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_delete_success_total(&self) -> u64 {
+        self.conntrack_delete_success_total.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_delete_not_found_total(&self) -> u64 {
+        self.conntrack_delete_not_found_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_delete_error_total(&self) -> u64 {
+        self.conntrack_delete_error_total.load(Ordering::Relaxed)
+    }
+    pub fn get_conntrack_close_event_drop_total(&self) -> u64 {
+        self.conntrack_close_event_drop_total
+            .load(Ordering::Relaxed)
     }
     pub fn get_me_keepalive_sent(&self) -> u64 {
         self.me_keepalive_sent.load(Ordering::Relaxed)
@@ -1779,6 +1934,30 @@ impl Stats {
     pub fn get_me_d2c_flush_duration_us_bucket_gt_20000(&self) -> u64 {
         self.me_d2c_flush_duration_us_bucket_gt_20000
             .load(Ordering::Relaxed)
+    }
+
+    pub fn get_buffer_pool_pooled_gauge(&self) -> u64 {
+        self.buffer_pool_pooled_gauge.load(Ordering::Relaxed)
+    }
+
+    pub fn get_buffer_pool_allocated_gauge(&self) -> u64 {
+        self.buffer_pool_allocated_gauge.load(Ordering::Relaxed)
+    }
+
+    pub fn get_buffer_pool_in_use_gauge(&self) -> u64 {
+        self.buffer_pool_in_use_gauge.load(Ordering::Relaxed)
+    }
+
+    pub fn get_me_c2me_send_full_total(&self) -> u64 {
+        self.me_c2me_send_full_total.load(Ordering::Relaxed)
+    }
+
+    pub fn get_me_c2me_send_high_water_total(&self) -> u64 {
+        self.me_c2me_send_high_water_total.load(Ordering::Relaxed)
+    }
+
+    pub fn get_me_c2me_send_timeout_total(&self) -> u64 {
+        self.me_c2me_send_timeout_total.load(Ordering::Relaxed)
     }
     pub fn get_me_d2c_batch_timeout_armed_total(&self) -> u64 {
         self.me_d2c_batch_timeout_armed_total
@@ -2171,6 +2350,8 @@ impl ReplayShard {
 
     fn cleanup(&mut self, now: Instant, window: Duration) {
         if window.is_zero() {
+            self.cache.clear();
+            self.queue.clear();
             return;
         }
         let cutoff = now.checked_sub(window).unwrap_or(now);
@@ -2192,13 +2373,22 @@ impl ReplayShard {
     }
 
     fn check(&mut self, key: &[u8], now: Instant, window: Duration) -> bool {
+        if window.is_zero() {
+            return false;
+        }
         self.cleanup(now, window);
         // key is &[u8], resolves Q=[u8] via Box<[u8]>: Borrow<[u8]>
         self.cache.get(key).is_some()
     }
 
     fn add(&mut self, key: &[u8], now: Instant, window: Duration) {
+        if window.is_zero() {
+            return;
+        }
         self.cleanup(now, window);
+        if self.cache.peek(key).is_some() {
+            return;
+        }
 
         let seq = self.next_seq();
         let boxed_key: Box<[u8]> = key.into();
@@ -2341,7 +2531,7 @@ impl ReplayChecker {
         let interval = if self.window.as_secs() > 60 {
             Duration::from_secs(30)
         } else {
-            Duration::from_secs(self.window.as_secs().max(1) / 2)
+            Duration::from_secs((self.window.as_secs().max(1) / 2).max(1))
         };
 
         loop {
@@ -2551,6 +2741,20 @@ mod tests {
         assert!(checker.check_handshake(b"expire"));
         std::thread::sleep(Duration::from_millis(100));
         assert!(!checker.check_handshake(b"expire"));
+    }
+
+    #[test]
+    fn test_replay_checker_zero_window_does_not_retain_entries() {
+        let checker = ReplayChecker::new(100, Duration::ZERO);
+
+        for _ in 0..1_000 {
+            assert!(!checker.check_handshake(b"no-retain"));
+            checker.add_handshake(b"no-retain");
+        }
+
+        let stats = checker.stats();
+        assert_eq!(stats.total_entries, 0);
+        assert_eq!(stats.total_queue_len, 0);
     }
 
     #[test]

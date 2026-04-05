@@ -6,12 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn test_config_with_secret_hex(secret_hex: &str) -> ProxyConfig {
     let mut cfg = ProxyConfig::default();
     cfg.access.users.clear();
@@ -127,8 +121,8 @@ fn make_valid_mtproto_handshake(
 
 #[tokio::test]
 async fn tls_alpn_reject_does_not_pollute_replay_cache() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let secret = [0x11u8; 16];
     let mut config = test_config_with_secret_hex("11111111111111111111111111111111");
@@ -164,8 +158,8 @@ async fn tls_alpn_reject_does_not_pollute_replay_cache() {
 
 #[tokio::test]
 async fn tls_truncated_session_id_len_fails_closed_without_panic() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let config = test_config_with_secret_hex("33333333333333333333333333333333");
     let replay_checker = ReplayChecker::new(128, Duration::from_secs(60));
@@ -193,10 +187,10 @@ async fn tls_truncated_session_id_len_fails_closed_without_panic() {
 
 #[test]
 fn auth_probe_eviction_identical_timestamps_keeps_map_bounded() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
-    let state = auth_probe_state_map();
+    let state = auth_probe_state_for_testing_in_shared(shared.as_ref());
     let same = Instant::now();
 
     for i in 0..AUTH_PROBE_TRACK_MAX_ENTRIES {
@@ -212,7 +206,12 @@ fn auth_probe_eviction_identical_timestamps_keeps_map_bounded() {
     }
 
     let new_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 21, 21));
-    auth_probe_record_failure_with_state(state, new_ip, same + Duration::from_millis(1));
+    auth_probe_record_failure_with_state_in(
+        shared.as_ref(),
+        state,
+        new_ip,
+        same + Duration::from_millis(1),
+    );
 
     assert_eq!(state.len(), AUTH_PROBE_TRACK_MAX_ENTRIES);
     assert!(state.contains_key(&new_ip));
@@ -220,21 +219,21 @@ fn auth_probe_eviction_identical_timestamps_keeps_map_bounded() {
 
 #[test]
 fn clear_auth_probe_state_recovers_from_poisoned_saturation_lock() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
-    let saturation = auth_probe_saturation_state();
+    let shared_for_poison = shared.clone();
     let poison_thread = std::thread::spawn(move || {
-        let _hold = saturation
+        let _hold = auth_probe_saturation_state_for_testing_in_shared(shared_for_poison.as_ref())
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         panic!("intentional poison for regression coverage");
     });
     let _ = poison_thread.join();
 
-    clear_auth_probe_state_for_testing();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
-    let guard = auth_probe_saturation_state()
+    let guard = auth_probe_saturation_state_for_testing_in_shared(shared.as_ref())
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(guard.is_none());
@@ -242,12 +241,9 @@ fn clear_auth_probe_state_recovers_from_poisoned_saturation_lock() {
 
 #[tokio::test]
 async fn mtproto_invalid_length_secret_is_ignored_and_valid_user_still_auths() {
-    let _probe_guard = auth_probe_test_guard();
-    let _warn_guard = warned_secrets_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_auth_probe_state_for_testing();
-    clear_warned_secrets_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
+    clear_warned_secrets_for_testing_in_shared(shared.as_ref());
 
     let mut config = ProxyConfig::default();
     config.general.modes.secure = true;
@@ -285,14 +281,14 @@ async fn mtproto_invalid_length_secret_is_ignored_and_valid_user_still_auths() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn saturation_grace_exhaustion_under_concurrency_keeps_peer_throttled() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     let peer_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 80));
     let now = Instant::now();
 
     {
-        let mut guard = auth_probe_saturation_state()
+        let mut guard = auth_probe_saturation_state_for_testing_in_shared(shared.as_ref())
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(AuthProbeSaturationState {
@@ -302,7 +298,7 @@ async fn saturation_grace_exhaustion_under_concurrency_keeps_peer_throttled() {
         });
     }
 
-    let state = auth_probe_state_map();
+    let state = auth_probe_state_for_testing_in_shared(shared.as_ref());
     state.insert(
         peer_ip,
         AuthProbeState {
@@ -318,9 +314,10 @@ async fn saturation_grace_exhaustion_under_concurrency_keeps_peer_throttled() {
 
     for _ in 0..tasks {
         let b = barrier.clone();
+        let shared = shared.clone();
         handles.push(tokio::spawn(async move {
             b.wait().await;
-            auth_probe_record_failure(peer_ip, Instant::now());
+            auth_probe_record_failure_in(shared.as_ref(), peer_ip, Instant::now());
         }));
     }
 
@@ -333,7 +330,8 @@ async fn saturation_grace_exhaustion_under_concurrency_keeps_peer_throttled() {
         final_state.fail_streak
             >= AUTH_PROBE_BACKOFF_START_FAILS + AUTH_PROBE_SATURATION_GRACE_FAILS
     );
-    assert!(auth_probe_should_apply_preauth_throttle(
+    assert!(auth_probe_should_apply_preauth_throttle_in(
+        shared.as_ref(),
         peer_ip,
         Instant::now()
     ));

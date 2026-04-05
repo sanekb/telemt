@@ -4,12 +4,6 @@ use crate::protocol::constants::{ProtoTag, TLS_RECORD_HANDSHAKE, TLS_VERSION};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-fn auth_probe_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    auth_probe_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn make_valid_mtproto_handshake(
     secret_hex: &str,
     proto_tag: ProtoTag,
@@ -149,8 +143,8 @@ fn median_ns(samples: &mut [u128]) -> u128 {
 #[tokio::test]
 #[ignore = "manual benchmark: timing-sensitive and host-dependent"]
 async fn mtproto_user_scan_timing_manual_benchmark() {
-    let _guard = auth_probe_test_guard();
-    clear_auth_probe_state_for_testing();
+    let shared = ProxySharedState::new();
+    clear_auth_probe_state_for_testing_in_shared(shared.as_ref());
 
     const DECOY_USERS: usize = 8_000;
     const ITERATIONS: usize = 250;
@@ -243,7 +237,7 @@ async fn mtproto_user_scan_timing_manual_benchmark() {
 #[tokio::test]
 #[ignore = "manual benchmark: timing-sensitive and host-dependent"]
 async fn tls_sni_preferred_vs_no_sni_fallback_manual_benchmark() {
-    let _guard = auth_probe_test_guard();
+    let shared = ProxySharedState::new();
 
     const DECOY_USERS: usize = 8_000;
     const ITERATIONS: usize = 250;
@@ -281,7 +275,7 @@ async fn tls_sni_preferred_vs_no_sni_fallback_manual_benchmark() {
         let no_sni = make_valid_tls_handshake(&target_secret, (i as u32).wrapping_add(10_000));
 
         let started_sni = Instant::now();
-        let sni_secrets = decode_user_secrets(&config, Some(preferred_user));
+        let sni_secrets = decode_user_secrets_in(shared.as_ref(), &config, Some(preferred_user));
         let sni_result = tls::validate_tls_handshake_with_replay_window(
             &with_sni,
             &sni_secrets,
@@ -292,7 +286,7 @@ async fn tls_sni_preferred_vs_no_sni_fallback_manual_benchmark() {
         assert!(sni_result.is_some());
 
         let started_no_sni = Instant::now();
-        let no_sni_secrets = decode_user_secrets(&config, None);
+        let no_sni_secrets = decode_user_secrets_in(shared.as_ref(), &config, None);
         let no_sni_result = tls::validate_tls_handshake_with_replay_window(
             &no_sni,
             &no_sni_secrets,
