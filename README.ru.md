@@ -6,10 +6,7 @@
 
 > [!NOTE]
 >
-> Исправленный TLS ClientHello доступен:
-> - в **Telegram Desktop** начиная с версии **6.7.2**; 
-> - в **Telegram Android** начиная с версии **12.6.4**;
-> - в **Telegram для iOS** начиная с версии **12.6.2**.
+> Исправленный TLS ClientHello доступен в Telegram для настольных ПК, Android и iOS.
 > 
 > Пожалуйста, обновите клиентское приложение для работы с EE-MTProxy.
 
@@ -27,10 +24,7 @@
 - Метрики в формате Prometheus;
 - TLS-fronting и TCP-splicing для маскировки от DPI.
 
-![telemt_scheme](docs/assets/telemt.png)
-
 ## Особенности
-
 Реализация **TLS-fronting** максимально приближена к поведению реального HTTPS-трафика (подробнее - [FAQ](docs/FAQ.ru.md#распознаваемость-для-dpi-и-сканеров)).
 
 ***Middle-End Pool*** оптимизирован для высокой производительности.
@@ -105,3 +99,4 @@ telemt config.toml
 - Безопасность памяти;
 - Асинхронная архитектура Tokio.
 
+![telemt_scheme](docs/assets/telemt.png)
