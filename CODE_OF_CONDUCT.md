@@ -57,7 +57,9 @@ Participants are expected to:
 
 Precision is learned.
 
-New contributors are welcome. They are expected to grow into these standards. Existing contributors are expected to make that growth possible.
+- New contributors are welcome
+- They are expected to grow into these standards
+- Existing contributors are expected to make that growth possible
 
 > **Wer behauptet, belegt.**
 
