@@ -40,7 +40,7 @@ that does not occur in modern browsers.
 
 > [!IMPORTANT]
 > TLS fingerprint has been fixed in latest version of clients for Desktop / Android / iOS.  
-> Please update your cleint for MTProxy Fake-TLS to work correctly.
+> Please update your client for MTProxy Fake-TLS to work correctly.
 
 - We consider this a breakthrough aspect, which has no stable analogues today
 - Based on this: if `telemt` configured correctly, **TLS mode is completely identical to real-life handshake + communication** with a specified host
