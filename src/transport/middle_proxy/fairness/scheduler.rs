@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use crate::protocol::constants::RPC_FLAG_QUICKACK;
 
 use super::model::{
     AdmissionDecision, DispatchAction, DispatchCandidate, DispatchFeedback, FlowFairnessState,
@@ -26,6 +27,8 @@ pub(crate) struct WorkerFairnessConfig {
     pub(crate) max_consecutive_stalls_before_close: u8,
     pub(crate) soft_bucket_count: usize,
     pub(crate) soft_bucket_share_pct: u8,
+    pub(crate) default_flow_weight: u8,
+    pub(crate) quickack_flow_weight: u8,
     pub(crate) pressure: PressureConfig,
 }
 
@@ -46,6 +49,8 @@ impl Default for WorkerFairnessConfig {
             max_consecutive_stalls_before_close: 16,
             soft_bucket_count: 64,
             soft_bucket_share_pct: 25,
+            default_flow_weight: 1,
+            quickack_flow_weight: 4,
             pressure: PressureConfig::default(),
         }
     }
@@ -57,9 +62,9 @@ struct FlowEntry {
 }
 
 impl FlowEntry {
-    fn new(flow_id: u64, worker_id: u16, bucket_id: usize) -> Self {
+    fn new(flow_id: u64, worker_id: u16, bucket_id: usize, weight_quanta: u8) -> Self {
         Self {
-            fairness: FlowFairnessState::new(flow_id, worker_id, bucket_id),
+            fairness: FlowFairnessState::new(flow_id, worker_id, bucket_id, weight_quanta),
             queue: VecDeque::new(),
         }
     }
@@ -186,6 +191,7 @@ impl WorkerFairnessState {
         }
 
         let bucket_id = self.bucket_for(conn_id);
+        let frame_weight = Self::weight_for_flags(&self.config, flags);
         let bucket_cap = self
             .config
             .max_total_queued_bytes
@@ -207,12 +213,13 @@ impl WorkerFairnessState {
                 self.bucket_active_flows[bucket_id].saturating_add(1);
             self.flows.insert(
                 conn_id,
-                FlowEntry::new(conn_id, self.config.worker_id, bucket_id),
+                FlowEntry::new(conn_id, self.config.worker_id, bucket_id, frame_weight),
             );
             self.flows
                 .get_mut(&conn_id)
                 .expect("flow inserted must be retrievable")
         };
+        entry.fairness.weight_quanta = entry.fairness.weight_quanta.max(frame_weight);
 
         if entry.fairness.pending_bytes.saturating_add(frame_bytes)
             > self.config.max_flow_queued_bytes
@@ -682,6 +689,14 @@ impl WorkerFairnessState {
         }
     }
 
+    #[inline]
+    fn weight_for_flags(config: &WorkerFairnessConfig, flags: u32) -> u8 {
+        if (flags & RPC_FLAG_QUICKACK) != 0 {
+            return config.quickack_flow_weight.max(1);
+        }
+        config.default_flow_weight.max(1)
+    }
+
     #[cfg(test)]
     pub(crate) fn debug_recompute_flow_counters(&self, now: Instant) -> (usize, usize) {
         let pressure_state = self.pressure.state();
@@ -758,12 +773,14 @@ impl WorkerFairnessState {
             return config.penalized_quantum_bytes.max(1);
         }
 
-        match pressure_state {
+        let base_quantum = match pressure_state {
             PressureState::Normal => config.base_quantum_bytes.max(1),
             PressureState::Pressured => config.pressured_quantum_bytes.max(1),
             PressureState::Shedding => config.pressured_quantum_bytes.max(1),
             PressureState::Saturated => config.penalized_quantum_bytes.max(1),
-        }
+        };
+        let weighted_quantum = base_quantum.saturating_mul(fairness.weight_quanta.max(1) as u32);
+        weighted_quantum.max(1)
     }
 
     fn bucket_for(&self, conn_id: u64) -> usize {
