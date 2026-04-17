@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::proxy::handshake::{AuthProbeSaturationState, AuthProbeState};
 use crate::proxy::middle_relay::{DesyncDedupRotationState, RelayIdleCandidateRegistry};
+use crate::proxy::traffic_limiter::TrafficLimiter;
 
 const HANDSHAKE_RECENT_USER_RING_LEN: usize = 64;
 
@@ -65,6 +66,7 @@ pub(crate) struct MiddleRelaySharedState {
 pub(crate) struct ProxySharedState {
     pub(crate) handshake: HandshakeSharedState,
     pub(crate) middle_relay: MiddleRelaySharedState,
+    pub(crate) traffic_limiter: Arc<TrafficLimiter>,
     pub(crate) conntrack_pressure_active: AtomicBool,
     pub(crate) conntrack_close_tx: Mutex<Option<mpsc::Sender<ConntrackCloseEvent>>>,
 }
@@ -98,6 +100,7 @@ impl ProxySharedState {
                 relay_idle_registry: Mutex::new(RelayIdleCandidateRegistry::default()),
                 relay_idle_mark_seq: AtomicU64::new(0),
             },
+            traffic_limiter: TrafficLimiter::new(),
             conntrack_pressure_active: AtomicBool::new(false),
             conntrack_close_tx: Mutex::new(None),
         })

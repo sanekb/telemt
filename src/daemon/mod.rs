@@ -8,6 +8,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::unistd::{self, ForkResult, Gid, Pid, Uid, chdir, close, fork, getpid, setsid};
 use tracing::{debug, info, warn};
@@ -157,15 +158,15 @@ fn redirect_stdio_to_devnull() -> Result<(), DaemonError> {
     unsafe {
         // Redirect stdin (fd 0)
         if libc::dup2(devnull_fd, 0) < 0 {
-            return Err(DaemonError::RedirectFailed(nix::errno::Errno::last()));
+            return Err(DaemonError::RedirectFailed(Errno::last()));
         }
         // Redirect stdout (fd 1)
         if libc::dup2(devnull_fd, 1) < 0 {
-            return Err(DaemonError::RedirectFailed(nix::errno::Errno::last()));
+            return Err(DaemonError::RedirectFailed(Errno::last()));
         }
         // Redirect stderr (fd 2)
         if libc::dup2(devnull_fd, 2) < 0 {
-            return Err(DaemonError::RedirectFailed(nix::errno::Errno::last()));
+            return Err(DaemonError::RedirectFailed(Errno::last()));
         }
     }
 
@@ -337,6 +338,27 @@ fn is_process_running(pid: i32) -> bool {
     nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok()
 }
 
+// macOS gates nix::unistd::setgroups differently in the current dependency set,
+// so call libc directly there while preserving the original nix path elsewhere.
+fn set_supplementary_groups(gid: Gid) -> Result<(), nix::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        let groups = [gid.as_raw()];
+        let rc = unsafe {
+            libc::setgroups(
+                i32::try_from(groups.len()).expect("single supplementary group must fit in c_int"),
+                groups.as_ptr(),
+            )
+        };
+        if rc == 0 { Ok(()) } else { Err(Errno::last()) }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        unistd::setgroups(&[gid])
+    }
+}
+
 /// Drops privileges to the specified user and group.
 ///
 /// This should be called after binding privileged ports but before entering
@@ -368,7 +390,7 @@ pub fn drop_privileges(
 
     if let Some(gid) = target_gid {
         unistd::setgid(gid).map_err(DaemonError::PrivilegeDrop)?;
-        unistd::setgroups(&[gid]).map_err(DaemonError::PrivilegeDrop)?;
+        set_supplementary_groups(gid).map_err(DaemonError::PrivilegeDrop)?;
         info!(gid = gid.as_raw(), "Dropped group privileges");
     }
 

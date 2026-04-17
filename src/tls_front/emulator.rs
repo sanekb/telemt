@@ -11,6 +11,7 @@ use crc32fast::Hasher;
 
 const MIN_APP_DATA: usize = 64;
 const MAX_APP_DATA: usize = MAX_TLS_CIPHERTEXT_SIZE;
+const MAX_TICKET_RECORDS: usize = 4;
 
 fn jitter_and_clamp_sizes(sizes: &[usize], rng: &SecureRandom) -> Vec<usize> {
     sizes
@@ -57,6 +58,53 @@ fn ensure_payload_capacity(mut sizes: Vec<usize>, payload_len: usize) -> Vec<usi
         let chunk = (remaining + 17).clamp(MIN_APP_DATA, MAX_APP_DATA);
         sizes.push(chunk);
         body_total += chunk.saturating_sub(17);
+    }
+
+    sizes
+}
+
+fn emulated_app_data_sizes(cached: &CachedTlsData) -> Vec<usize> {
+    match cached.behavior_profile.source {
+        TlsProfileSource::Raw | TlsProfileSource::Merged => {
+            if !cached.behavior_profile.app_data_record_sizes.is_empty() {
+                return cached.behavior_profile.app_data_record_sizes.clone();
+            }
+        }
+        TlsProfileSource::Default | TlsProfileSource::Rustls => {}
+    }
+
+    let mut sizes = cached.app_data_records_sizes.clone();
+    if sizes.is_empty() {
+        sizes.push(cached.total_app_data_len.max(1024));
+    }
+    sizes
+}
+
+fn emulated_change_cipher_spec_count(cached: &CachedTlsData) -> usize {
+    usize::from(cached.behavior_profile.change_cipher_spec_count.max(1))
+}
+
+fn emulated_ticket_record_sizes(
+    cached: &CachedTlsData,
+    new_session_tickets: u8,
+    rng: &SecureRandom,
+) -> Vec<usize> {
+    let mut sizes = match cached.behavior_profile.source {
+        TlsProfileSource::Raw | TlsProfileSource::Merged => {
+            cached.behavior_profile.ticket_record_sizes.clone()
+        }
+        TlsProfileSource::Default | TlsProfileSource::Rustls => Vec::new(),
+    };
+
+    let target_count = sizes
+        .len()
+        .max(usize::from(
+            new_session_tickets.min(MAX_TICKET_RECORDS as u8),
+        ))
+        .min(MAX_TICKET_RECORDS);
+
+    while sizes.len() < target_count {
+        sizes.push(rng.range(48) + 48);
     }
 
     sizes
@@ -180,39 +228,21 @@ pub fn build_emulated_server_hello(
     server_hello.extend_from_slice(&message);
 
     // --- ChangeCipherSpec ---
-    let change_cipher_spec = [
-        TLS_RECORD_CHANGE_CIPHER,
-        TLS_VERSION[0],
-        TLS_VERSION[1],
-        0x00,
-        0x01,
-        0x01,
-    ];
+    let change_cipher_spec_count = emulated_change_cipher_spec_count(cached);
+    let mut change_cipher_spec = Vec::with_capacity(change_cipher_spec_count * 6);
+    for _ in 0..change_cipher_spec_count {
+        change_cipher_spec.extend_from_slice(&[
+            TLS_RECORD_CHANGE_CIPHER,
+            TLS_VERSION[0],
+            TLS_VERSION[1],
+            0x00,
+            0x01,
+            0x01,
+        ]);
+    }
 
     // --- ApplicationData (fake encrypted records) ---
-    let sizes = match cached.behavior_profile.source {
-        TlsProfileSource::Raw | TlsProfileSource::Merged => cached
-            .app_data_records_sizes
-            .first()
-            .copied()
-            .or_else(|| {
-                cached
-                    .behavior_profile
-                    .app_data_record_sizes
-                    .first()
-                    .copied()
-            })
-            .map(|size| vec![size])
-            .unwrap_or_else(|| vec![cached.total_app_data_len.max(1024)]),
-        _ => {
-            let mut sizes = cached.app_data_records_sizes.clone();
-            if sizes.is_empty() {
-                sizes.push(cached.total_app_data_len.max(1024));
-            }
-            sizes
-        }
-    };
-    let mut sizes = jitter_and_clamp_sizes(&sizes, rng);
+    let mut sizes = jitter_and_clamp_sizes(&emulated_app_data_sizes(cached), rng);
     let compact_payload = cached
         .cert_info
         .as_ref()
@@ -299,17 +329,13 @@ pub fn build_emulated_server_hello(
     // --- Combine ---
     // Optional NewSessionTicket mimic records (opaque ApplicationData for fingerprint).
     let mut tickets = Vec::new();
-    let ticket_count = new_session_tickets.min(4);
-    if ticket_count > 0 {
-        for _ in 0..ticket_count {
-            let ticket_len: usize = rng.range(48) + 48;
-            let mut rec = Vec::with_capacity(5 + ticket_len);
-            rec.push(TLS_RECORD_APPLICATION);
-            rec.extend_from_slice(&TLS_VERSION);
-            rec.extend_from_slice(&(ticket_len as u16).to_be_bytes());
-            rec.extend_from_slice(&rng.bytes(ticket_len));
-            tickets.extend_from_slice(&rec);
-        }
+    for ticket_len in emulated_ticket_record_sizes(cached, new_session_tickets, rng) {
+        let mut rec = Vec::with_capacity(5 + ticket_len);
+        rec.push(TLS_RECORD_APPLICATION);
+        rec.extend_from_slice(&TLS_VERSION);
+        rec.extend_from_slice(&(ticket_len as u16).to_be_bytes());
+        rec.extend_from_slice(&rng.bytes(ticket_len));
+        tickets.extend_from_slice(&rec);
     }
 
     let mut response = Vec::with_capacity(
@@ -333,6 +359,10 @@ pub fn build_emulated_server_hello(
 #[cfg(test)]
 #[path = "tests/emulator_security_tests.rs"]
 mod security_tests;
+
+#[cfg(test)]
+#[path = "tests/emulator_profile_fidelity_security_tests.rs"]
+mod emulator_profile_fidelity_security_tests;
 
 #[cfg(test)]
 mod tests {
@@ -478,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_emulated_server_hello_ignores_tail_records_for_raw_profile() {
+    fn test_build_emulated_server_hello_replays_tail_records_for_profiled_tls() {
         let mut cached = make_cached(None);
         cached.app_data_records_sizes = vec![27, 3905, 537, 69];
         cached.total_app_data_len = 4538;
@@ -500,11 +530,19 @@ mod tests {
 
         let hello_len = u16::from_be_bytes([response[3], response[4]]) as usize;
         let ccs_start = 5 + hello_len;
-        let app_start = ccs_start + 6;
-        let app_len =
-            u16::from_be_bytes([response[app_start + 3], response[app_start + 4]]) as usize;
+        let mut pos = ccs_start + 6;
+        let mut app_lengths = Vec::new();
+        while pos + 5 <= response.len() {
+            assert_eq!(response[pos], TLS_RECORD_APPLICATION);
+            let record_len = u16::from_be_bytes([response[pos + 3], response[pos + 4]]) as usize;
+            app_lengths.push(record_len);
+            pos += 5 + record_len;
+        }
 
-        assert_eq!(response[app_start], TLS_RECORD_APPLICATION);
-        assert_eq!(app_start + 5 + app_len, response.len());
+        assert_eq!(app_lengths.len(), 4);
+        assert_eq!(app_lengths[0], 64);
+        assert_eq!(app_lengths[3], 69);
+        assert!(app_lengths[1] >= 64);
+        assert!(app_lengths[2] >= 64);
     }
 }

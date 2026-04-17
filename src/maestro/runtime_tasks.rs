@@ -51,6 +51,7 @@ pub(crate) async fn spawn_runtime_tasks(
     beobachten: Arc<BeobachtenStore>,
     api_config_tx: watch::Sender<Arc<ProxyConfig>>,
     me_pool_for_policy: Option<Arc<MePool>>,
+    shared_state: Arc<ProxySharedState>,
 ) -> RuntimeWatches {
     let um_clone = upstream_manager.clone();
     let dc_overrides_for_health = config.dc_overrides.clone();
@@ -178,6 +179,41 @@ pub(crate) async fn spawn_runtime_tasks(
                     .await;
                 prev_mode = cfg.access.user_max_unique_ips_mode;
                 prev_window = cfg.access.user_max_unique_ips_window_secs;
+            }
+        }
+    });
+
+    let limiter = shared_state.traffic_limiter.clone();
+    limiter.apply_policy(
+        config.access.user_rate_limits.clone(),
+        config.access.cidr_rate_limits.clone(),
+    );
+    let mut config_rx_rate_limits = config_rx.clone();
+    tokio::spawn(async move {
+        let mut prev_user_limits = config_rx_rate_limits
+            .borrow()
+            .access
+            .user_rate_limits
+            .clone();
+        let mut prev_cidr_limits = config_rx_rate_limits
+            .borrow()
+            .access
+            .cidr_rate_limits
+            .clone();
+        loop {
+            if config_rx_rate_limits.changed().await.is_err() {
+                break;
+            }
+            let cfg = config_rx_rate_limits.borrow_and_update().clone();
+            if prev_user_limits != cfg.access.user_rate_limits
+                || prev_cidr_limits != cfg.access.cidr_rate_limits
+            {
+                limiter.apply_policy(
+                    cfg.access.user_rate_limits.clone(),
+                    cfg.access.cidr_rate_limits.clone(),
+                );
+                prev_user_limits = cfg.access.user_rate_limits.clone();
+                prev_cidr_limits = cfg.access.cidr_rate_limits.clone();
             }
         }
     });

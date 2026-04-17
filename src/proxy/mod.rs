@@ -68,6 +68,7 @@ pub mod relay;
 pub mod route_mode;
 pub mod session_eviction;
 pub mod shared_state;
+pub mod traffic_limiter;
 
 pub use client::ClientHandler;
 #[allow(unused_imports)]

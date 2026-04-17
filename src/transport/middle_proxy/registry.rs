@@ -140,6 +140,10 @@ impl ConnRegistry {
         }
     }
 
+    pub fn route_channel_capacity(&self) -> usize {
+        self.route_channel_capacity
+    }
+
     #[cfg(test)]
     pub fn new() -> Self {
         Self::with_route_channel_capacity(4096)

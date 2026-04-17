@@ -861,6 +861,22 @@ impl ProxyConfig {
             ));
         }
 
+        for (user, limit) in &config.access.user_rate_limits {
+            if limit.up_bps == 0 && limit.down_bps == 0 {
+                return Err(ProxyError::Config(format!(
+                    "access.user_rate_limits.{user} must set at least one non-zero direction"
+                )));
+            }
+        }
+
+        for (cidr, limit) in &config.access.cidr_rate_limits {
+            if limit.up_bps == 0 && limit.down_bps == 0 {
+                return Err(ProxyError::Config(format!(
+                    "access.cidr_rate_limits.{cidr} must set at least one non-zero direction"
+                )));
+            }
+        }
+
         if config.general.me_reinit_every_secs == 0 {
             return Err(ProxyError::Config(
                 "general.me_reinit_every_secs must be > 0".to_string(),

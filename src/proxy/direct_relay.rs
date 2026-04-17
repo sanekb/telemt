@@ -316,6 +316,9 @@ where
 
     stats.increment_user_connects(user);
     let _direct_connection_lease = stats.acquire_direct_connection_lease();
+    let traffic_lease = shared
+        .traffic_limiter
+        .acquire_lease(user, success.peer.ip());
 
     let buffer_pool_trim = Arc::clone(&buffer_pool);
     let relay_activity_timeout = if shared.conntrack_pressure_active() {
@@ -329,7 +332,7 @@ where
     } else {
         Duration::from_secs(1800)
     };
-    let relay_result = crate::proxy::relay::relay_bidirectional_with_activity_timeout(
+    let relay_result = crate::proxy::relay::relay_bidirectional_with_activity_timeout_and_lease(
         client_reader,
         client_writer,
         tg_reader,
@@ -340,6 +343,7 @@ where
         Arc::clone(&stats),
         config.access.user_data_quota.get(user).copied(),
         buffer_pool,
+        traffic_lease,
         relay_activity_timeout,
     );
     tokio::pin!(relay_result);

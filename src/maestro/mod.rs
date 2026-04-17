@@ -664,6 +664,11 @@ async fn run_telemt_core(
     ));
 
     let buffer_pool = Arc::new(BufferPool::with_config(64 * 1024, 4096));
+    let shared_state = ProxySharedState::new();
+    shared_state.traffic_limiter.apply_policy(
+        config.access.user_rate_limits.clone(),
+        config.access.cidr_rate_limits.clone(),
+    );
 
     connectivity::run_startup_connectivity(
         &config,
@@ -695,6 +700,7 @@ async fn run_telemt_core(
         beobachten.clone(),
         api_config_tx.clone(),
         me_pool.clone(),
+        shared_state.clone(),
     )
     .await;
     let config_rx = runtime_watches.config_rx;
@@ -711,7 +717,6 @@ async fn run_telemt_core(
     )
     .await;
     let _admission_tx_hold = admission_tx;
-    let shared_state = ProxySharedState::new();
     conntrack_control::spawn_conntrack_controller(
         config_rx.clone(),
         stats.clone(),

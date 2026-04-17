@@ -175,6 +175,18 @@ pub struct Stats {
     me_route_drop_queue_full: AtomicU64,
     me_route_drop_queue_full_base: AtomicU64,
     me_route_drop_queue_full_high: AtomicU64,
+    me_fair_pressure_state_gauge: AtomicU64,
+    me_fair_active_flows_gauge: AtomicU64,
+    me_fair_queued_bytes_gauge: AtomicU64,
+    me_fair_standing_flows_gauge: AtomicU64,
+    me_fair_backpressured_flows_gauge: AtomicU64,
+    me_fair_scheduler_rounds_total: AtomicU64,
+    me_fair_deficit_grants_total: AtomicU64,
+    me_fair_deficit_skips_total: AtomicU64,
+    me_fair_enqueue_rejects_total: AtomicU64,
+    me_fair_shed_drops_total: AtomicU64,
+    me_fair_penalties_total: AtomicU64,
+    me_fair_downstream_stalls_total: AtomicU64,
     me_d2c_batches_total: AtomicU64,
     me_d2c_batch_frames_total: AtomicU64,
     me_d2c_batch_bytes_total: AtomicU64,
@@ -854,6 +866,78 @@ impl Stats {
         if self.telemetry_me_allows_normal() {
             self.me_route_drop_queue_full_high
                 .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn set_me_fair_pressure_state_gauge(&self, value: u64) {
+        if self.telemetry_me_allows_normal() {
+            self.me_fair_pressure_state_gauge
+                .store(value, Ordering::Relaxed);
+        }
+    }
+    pub fn set_me_fair_active_flows_gauge(&self, value: u64) {
+        if self.telemetry_me_allows_normal() {
+            self.me_fair_active_flows_gauge
+                .store(value, Ordering::Relaxed);
+        }
+    }
+    pub fn set_me_fair_queued_bytes_gauge(&self, value: u64) {
+        if self.telemetry_me_allows_normal() {
+            self.me_fair_queued_bytes_gauge
+                .store(value, Ordering::Relaxed);
+        }
+    }
+    pub fn set_me_fair_standing_flows_gauge(&self, value: u64) {
+        if self.telemetry_me_allows_normal() {
+            self.me_fair_standing_flows_gauge
+                .store(value, Ordering::Relaxed);
+        }
+    }
+    pub fn set_me_fair_backpressured_flows_gauge(&self, value: u64) {
+        if self.telemetry_me_allows_normal() {
+            self.me_fair_backpressured_flows_gauge
+                .store(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_scheduler_rounds_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_scheduler_rounds_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_deficit_grants_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_deficit_grants_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_deficit_skips_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_deficit_skips_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_enqueue_rejects_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_enqueue_rejects_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_shed_drops_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_shed_drops_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_penalties_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_penalties_total
+                .fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    pub fn add_me_fair_downstream_stalls_total(&self, value: u64) {
+        if self.telemetry_me_allows_normal() && value > 0 {
+            self.me_fair_downstream_stalls_total
+                .fetch_add(value, Ordering::Relaxed);
         }
     }
     pub fn increment_me_d2c_batches_total(&self) {
@@ -1805,6 +1889,43 @@ impl Stats {
     }
     pub fn get_me_route_drop_queue_full_high(&self) -> u64 {
         self.me_route_drop_queue_full_high.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_pressure_state_gauge(&self) -> u64 {
+        self.me_fair_pressure_state_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_active_flows_gauge(&self) -> u64 {
+        self.me_fair_active_flows_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_queued_bytes_gauge(&self) -> u64 {
+        self.me_fair_queued_bytes_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_standing_flows_gauge(&self) -> u64 {
+        self.me_fair_standing_flows_gauge.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_backpressured_flows_gauge(&self) -> u64 {
+        self.me_fair_backpressured_flows_gauge
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_scheduler_rounds_total(&self) -> u64 {
+        self.me_fair_scheduler_rounds_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_deficit_grants_total(&self) -> u64 {
+        self.me_fair_deficit_grants_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_deficit_skips_total(&self) -> u64 {
+        self.me_fair_deficit_skips_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_enqueue_rejects_total(&self) -> u64 {
+        self.me_fair_enqueue_rejects_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_shed_drops_total(&self) -> u64 {
+        self.me_fair_shed_drops_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_penalties_total(&self) -> u64 {
+        self.me_fair_penalties_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_fair_downstream_stalls_total(&self) -> u64 {
+        self.me_fair_downstream_stalls_total.load(Ordering::Relaxed)
     }
     pub fn get_me_d2c_batches_total(&self) -> u64 {
         self.me_d2c_batches_total.load(Ordering::Relaxed)

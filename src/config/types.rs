@@ -1826,6 +1826,21 @@ pub struct AccessConfig {
     #[serde(default)]
     pub user_data_quota: HashMap<String, u64>,
 
+    /// Per-user transport rate limits in bits-per-second.
+    ///
+    /// Each entry supports independent upload (`up_bps`) and download
+    /// (`down_bps`) ceilings. A value of `0` in one direction means
+    /// "unlimited" for that direction.
+    #[serde(default)]
+    pub user_rate_limits: HashMap<String, RateLimitBps>,
+
+    /// Per-CIDR aggregate transport rate limits in bits-per-second.
+    ///
+    /// Matching uses longest-prefix-wins semantics. A value of `0` in one
+    /// direction means "unlimited" for that direction.
+    #[serde(default)]
+    pub cidr_rate_limits: HashMap<IpNetwork, RateLimitBps>,
+
     #[serde(default)]
     pub user_max_unique_ips: HashMap<String, usize>,
 
@@ -1859,6 +1874,8 @@ impl Default for AccessConfig {
             user_max_tcp_conns_global_each: default_user_max_tcp_conns_global_each(),
             user_expirations: HashMap::new(),
             user_data_quota: HashMap::new(),
+            user_rate_limits: HashMap::new(),
+            cidr_rate_limits: HashMap::new(),
             user_max_unique_ips: HashMap::new(),
             user_max_unique_ips_global_each: default_user_max_unique_ips_global_each(),
             user_max_unique_ips_mode: UserMaxUniqueIpsMode::default(),
@@ -1868,6 +1885,14 @@ impl Default for AccessConfig {
             ignore_time_skew: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitBps {
+    #[serde(default)]
+    pub up_bps: u64,
+    #[serde(default)]
+    pub down_bps: u64,
 }
 
 // ============= Aux Structures =============

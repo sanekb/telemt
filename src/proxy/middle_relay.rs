@@ -28,6 +28,7 @@ use crate::proxy::route_mode::{
 use crate::proxy::shared_state::{
     ConntrackCloseEvent, ConntrackClosePublishResult, ConntrackCloseReason, ProxySharedState,
 };
+use crate::proxy::traffic_limiter::{RateDirection, TrafficLease, next_refill_delay};
 use crate::stats::{
     MeD2cFlushReason, MeD2cQuotaRejectStage, MeD2cWriteMode, QuotaReserveError, Stats, UserStats,
 };
@@ -285,6 +286,10 @@ impl RelayClientIdleState {
     fn on_client_frame(&mut self, now: Instant) {
         self.last_client_frame_at = now;
         self.soft_idle_marked = false;
+    }
+
+    fn on_client_tiny_frame(&mut self, now: Instant) {
+        self.last_client_frame_at = now;
     }
 }
 
@@ -592,6 +597,41 @@ async fn reserve_user_quota_with_yield(
         backoff_ms = backoff_ms
             .saturating_mul(2)
             .min(QUOTA_RESERVE_BACKOFF_MAX_MS);
+    }
+}
+
+async fn wait_for_traffic_budget(
+    lease: Option<&Arc<TrafficLease>>,
+    direction: RateDirection,
+    bytes: u64,
+) {
+    if bytes == 0 {
+        return;
+    }
+    let Some(lease) = lease else {
+        return;
+    };
+
+    let mut remaining = bytes;
+    while remaining > 0 {
+        let consume = lease.try_consume(direction, remaining);
+        if consume.granted > 0 {
+            remaining = remaining.saturating_sub(consume.granted);
+            continue;
+        }
+
+        let wait_started_at = Instant::now();
+        tokio::time::sleep(next_refill_delay()).await;
+        let wait_ms = wait_started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        lease.observe_wait_ms(
+            direction,
+            consume.blocked_user,
+            consume.blocked_cidr,
+            wait_ms,
+        );
     }
 }
 
@@ -985,6 +1025,7 @@ where
     let quota_limit = config.access.user_data_quota.get(&user).copied();
     let quota_user_stats = quota_limit.map(|_| stats.get_or_create_user_stats_handle(&user));
     let peer = success.peer;
+    let traffic_lease = shared.traffic_limiter.acquire_lease(&user, peer.ip());
     let proto_tag = success.proto_tag;
     let pool_generation = me_pool.current_generation();
 
@@ -1120,6 +1161,7 @@ where
     let rng_clone = rng.clone();
     let user_clone = user.clone();
     let quota_user_stats_me_writer = quota_user_stats.clone();
+    let traffic_lease_me_writer = traffic_lease.clone();
     let last_downstream_activity_ms_clone = last_downstream_activity_ms.clone();
     let bytes_me2c_clone = bytes_me2c.clone();
     let d2c_flush_policy = MeD2cFlushPolicy::from_config(&config);
@@ -1153,7 +1195,7 @@ where
 
                     let first_is_downstream_activity =
                         matches!(&first, MeResponse::Data { .. } | MeResponse::Ack(_));
-                    match process_me_writer_response(
+                    match process_me_writer_response_with_traffic_lease(
                         first,
                         &mut writer,
                         proto_tag,
@@ -1164,6 +1206,7 @@ where
                         quota_user_stats_me_writer.as_deref(),
                         quota_limit,
                         d2c_flush_policy.quota_soft_overshoot_bytes,
+                        traffic_lease_me_writer.as_ref(),
                         bytes_me2c_clone.as_ref(),
                         conn_id,
                         d2c_flush_policy.ack_flush_immediate,
@@ -1213,7 +1256,7 @@ where
 
                         let next_is_downstream_activity =
                             matches!(&next, MeResponse::Data { .. } | MeResponse::Ack(_));
-                        match process_me_writer_response(
+                        match process_me_writer_response_with_traffic_lease(
                             next,
                             &mut writer,
                             proto_tag,
@@ -1224,6 +1267,7 @@ where
                             quota_user_stats_me_writer.as_deref(),
                             quota_limit,
                             d2c_flush_policy.quota_soft_overshoot_bytes,
+                            traffic_lease_me_writer.as_ref(),
                             bytes_me2c_clone.as_ref(),
                             conn_id,
                             d2c_flush_policy.ack_flush_immediate,
@@ -1276,7 +1320,7 @@ where
                             Ok(Some(next)) => {
                                 let next_is_downstream_activity =
                                     matches!(&next, MeResponse::Data { .. } | MeResponse::Ack(_));
-                                match process_me_writer_response(
+                                match process_me_writer_response_with_traffic_lease(
                                     next,
                                     &mut writer,
                                     proto_tag,
@@ -1287,6 +1331,7 @@ where
                                     quota_user_stats_me_writer.as_deref(),
                                     quota_limit,
                                     d2c_flush_policy.quota_soft_overshoot_bytes,
+                                    traffic_lease_me_writer.as_ref(),
                                     bytes_me2c_clone.as_ref(),
                                     conn_id,
                                     d2c_flush_policy.ack_flush_immediate,
@@ -1341,7 +1386,7 @@ where
 
                                     let extra_is_downstream_activity =
                                         matches!(&extra, MeResponse::Data { .. } | MeResponse::Ack(_));
-                                    match process_me_writer_response(
+                                    match process_me_writer_response_with_traffic_lease(
                                         extra,
                                         &mut writer,
                                         proto_tag,
@@ -1352,6 +1397,7 @@ where
                                         quota_user_stats_me_writer.as_deref(),
                                         quota_limit,
                                         d2c_flush_policy.quota_soft_overshoot_bytes,
+                                        traffic_lease_me_writer.as_ref(),
                                         bytes_me2c_clone.as_ref(),
                                         conn_id,
                                         d2c_flush_policy.ack_flush_immediate,
@@ -1542,6 +1588,12 @@ where
                 match payload_result {
                     Ok(Some((payload, quickack))) => {
                         trace!(conn_id, bytes = payload.len(), "C->ME frame");
+                        wait_for_traffic_budget(
+                            traffic_lease.as_ref(),
+                            RateDirection::Up,
+                            payload.len() as u64,
+                        )
+                        .await;
                         forensics.bytes_c2me = forensics
                             .bytes_c2me
                             .saturating_add(payload.len() as u64);
@@ -1762,40 +1814,6 @@ where
                 let downstream_ms = last_downstream_activity_ms.load(Ordering::Relaxed);
                 let hard_deadline =
                     hard_deadline(idle_policy, idle_state, session_started_at, downstream_ms);
-                if now >= hard_deadline {
-                    clear_relay_idle_candidate_in(shared, forensics.conn_id);
-                    stats.increment_relay_idle_hard_close_total();
-                    let client_idle_secs = now
-                        .saturating_duration_since(idle_state.last_client_frame_at)
-                        .as_secs();
-                    let downstream_idle_secs = now
-                        .saturating_duration_since(
-                            session_started_at + Duration::from_millis(downstream_ms),
-                        )
-                        .as_secs();
-                    warn!(
-                        trace_id = format_args!("0x{:016x}", forensics.trace_id),
-                        conn_id = forensics.conn_id,
-                        user = %forensics.user,
-                        read_label,
-                        client_idle_secs,
-                        downstream_idle_secs,
-                        soft_idle_secs = idle_policy.soft_idle.as_secs(),
-                        hard_idle_secs = idle_policy.hard_idle.as_secs(),
-                        grace_secs = idle_policy.grace_after_downstream_activity.as_secs(),
-                        "Middle-relay hard idle close"
-                    );
-                    return Err(ProxyError::Io(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!(
-                            "middle-relay hard idle timeout while reading {read_label}: client_idle_secs={client_idle_secs}, downstream_idle_secs={downstream_idle_secs}, soft_idle_secs={}, hard_idle_secs={}, grace_secs={}",
-                            idle_policy.soft_idle.as_secs(),
-                            idle_policy.hard_idle.as_secs(),
-                            idle_policy.grace_after_downstream_activity.as_secs(),
-                        ),
-                    )));
-                }
-
                 if !idle_state.soft_idle_marked
                     && now.saturating_duration_since(idle_state.last_client_frame_at)
                         >= idle_policy.soft_idle
@@ -1850,7 +1868,45 @@ where
                         ),
                     )));
                 }
-                Err(_) => {}
+                Err(_) => {
+                    let now = Instant::now();
+                    let downstream_ms = last_downstream_activity_ms.load(Ordering::Relaxed);
+                    let hard_deadline =
+                        hard_deadline(idle_policy, idle_state, session_started_at, downstream_ms);
+                    if now >= hard_deadline {
+                        clear_relay_idle_candidate_in(shared, forensics.conn_id);
+                        stats.increment_relay_idle_hard_close_total();
+                        let client_idle_secs = now
+                            .saturating_duration_since(idle_state.last_client_frame_at)
+                            .as_secs();
+                        let downstream_idle_secs = now
+                            .saturating_duration_since(
+                                session_started_at + Duration::from_millis(downstream_ms),
+                            )
+                            .as_secs();
+                        warn!(
+                            trace_id = format_args!("0x{:016x}", forensics.trace_id),
+                            conn_id = forensics.conn_id,
+                            user = %forensics.user,
+                            read_label,
+                            client_idle_secs,
+                            downstream_idle_secs,
+                            soft_idle_secs = idle_policy.soft_idle.as_secs(),
+                            hard_idle_secs = idle_policy.hard_idle.as_secs(),
+                            grace_secs = idle_policy.grace_after_downstream_activity.as_secs(),
+                            "Middle-relay hard idle close"
+                        );
+                        return Err(ProxyError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!(
+                                "middle-relay hard idle timeout while reading {read_label}: client_idle_secs={client_idle_secs}, downstream_idle_secs={downstream_idle_secs}, soft_idle_secs={}, hard_idle_secs={}, grace_secs={}",
+                                idle_policy.soft_idle.as_secs(),
+                                idle_policy.hard_idle.as_secs(),
+                                idle_policy.grace_after_downstream_activity.as_secs(),
+                            ),
+                        )));
+                    }
+                }
             }
         }
 
@@ -1941,6 +1997,7 @@ where
         };
 
         if len == 0 {
+            idle_state.on_client_tiny_frame(Instant::now());
             idle_state.tiny_frame_debt = idle_state
                 .tiny_frame_debt
                 .saturating_add(TINY_FRAME_DEBT_PER_TINY);
@@ -2163,6 +2220,46 @@ async fn process_me_writer_response<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    process_me_writer_response_with_traffic_lease(
+        response,
+        client_writer,
+        proto_tag,
+        rng,
+        frame_buf,
+        stats,
+        user,
+        quota_user_stats,
+        quota_limit,
+        quota_soft_overshoot_bytes,
+        None,
+        bytes_me2c,
+        conn_id,
+        ack_flush_immediate,
+        batched,
+    )
+    .await
+}
+
+async fn process_me_writer_response_with_traffic_lease<W>(
+    response: MeResponse,
+    client_writer: &mut CryptoWriter<W>,
+    proto_tag: ProtoTag,
+    rng: &SecureRandom,
+    frame_buf: &mut Vec<u8>,
+    stats: &Stats,
+    user: &str,
+    quota_user_stats: Option<&UserStats>,
+    quota_limit: Option<u64>,
+    quota_soft_overshoot_bytes: u64,
+    traffic_lease: Option<&Arc<TrafficLease>>,
+    bytes_me2c: &AtomicU64,
+    conn_id: u64,
+    ack_flush_immediate: bool,
+    batched: bool,
+) -> Result<MeWriterResponseOutcome>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     match response {
         MeResponse::Data { flags, data } => {
             if batched {
@@ -2183,6 +2280,7 @@ where
                     });
                 }
             }
+            wait_for_traffic_budget(traffic_lease, RateDirection::Down, data_len).await;
 
             let write_mode =
                 match write_client_payload(client_writer, proto_tag, flags, &data, rng, frame_buf)
@@ -2220,6 +2318,7 @@ where
             } else {
                 trace!(conn_id, confirm, "ME->C quickack");
             }
+            wait_for_traffic_budget(traffic_lease, RateDirection::Down, 4).await;
             write_client_ack(client_writer, proto_tag, confirm).await?;
             stats.increment_me_d2c_ack_frames_total();
 

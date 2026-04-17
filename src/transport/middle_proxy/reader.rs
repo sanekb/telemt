@@ -20,11 +20,15 @@ use crate::protocol::constants::*;
 use crate::stats::Stats;
 
 use super::codec::{RpcChecksumMode, WriterCommand, rpc_crc};
+use super::fairness::{
+    AdmissionDecision, DispatchAction, DispatchFeedback, SchedulerDecision, WorkerFairnessConfig,
+    WorkerFairnessSnapshot, WorkerFairnessState,
+};
 use super::registry::RouteResult;
 use super::{ConnRegistry, MeResponse};
-
 const DATA_ROUTE_MAX_ATTEMPTS: usize = 3;
 const DATA_ROUTE_QUEUE_FULL_STARVATION_THRESHOLD: u8 = 3;
+const FAIRNESS_DRAIN_BUDGET_PER_LOOP: usize = 128;
 
 fn should_close_on_route_result_for_data(result: RouteResult) -> bool {
     matches!(result, RouteResult::NoConn | RouteResult::ChannelClosed)
@@ -77,6 +81,118 @@ async fn route_data_with_retry(
     }
 }
 
+#[inline]
+fn route_feedback(result: RouteResult) -> DispatchFeedback {
+    match result {
+        RouteResult::Routed => DispatchFeedback::Routed,
+        RouteResult::NoConn => DispatchFeedback::NoConn,
+        RouteResult::ChannelClosed => DispatchFeedback::ChannelClosed,
+        RouteResult::QueueFullBase | RouteResult::QueueFullHigh => DispatchFeedback::QueueFull,
+    }
+}
+
+fn report_route_drop(result: RouteResult, stats: &Stats) {
+    match result {
+        RouteResult::NoConn => stats.increment_me_route_drop_no_conn(),
+        RouteResult::ChannelClosed => stats.increment_me_route_drop_channel_closed(),
+        RouteResult::QueueFullBase => {
+            stats.increment_me_route_drop_queue_full();
+            stats.increment_me_route_drop_queue_full_base();
+        }
+        RouteResult::QueueFullHigh => {
+            stats.increment_me_route_drop_queue_full();
+            stats.increment_me_route_drop_queue_full_high();
+        }
+        RouteResult::Routed => {}
+    }
+}
+
+fn apply_fairness_metrics_delta(
+    stats: &Stats,
+    prev: &mut WorkerFairnessSnapshot,
+    current: WorkerFairnessSnapshot,
+) {
+    stats.set_me_fair_active_flows_gauge(current.active_flows as u64);
+    stats.set_me_fair_queued_bytes_gauge(current.total_queued_bytes);
+    stats.set_me_fair_standing_flows_gauge(current.standing_flows as u64);
+    stats.set_me_fair_backpressured_flows_gauge(current.backpressured_flows as u64);
+    stats.set_me_fair_pressure_state_gauge(current.pressure_state.as_u8() as u64);
+    stats.add_me_fair_scheduler_rounds_total(
+        current
+            .scheduler_rounds
+            .saturating_sub(prev.scheduler_rounds),
+    );
+    stats.add_me_fair_deficit_grants_total(
+        current.deficit_grants.saturating_sub(prev.deficit_grants),
+    );
+    stats.add_me_fair_deficit_skips_total(current.deficit_skips.saturating_sub(prev.deficit_skips));
+    stats.add_me_fair_enqueue_rejects_total(
+        current.enqueue_rejects.saturating_sub(prev.enqueue_rejects),
+    );
+    stats.add_me_fair_shed_drops_total(current.shed_drops.saturating_sub(prev.shed_drops));
+    stats.add_me_fair_penalties_total(
+        current
+            .fairness_penalties
+            .saturating_sub(prev.fairness_penalties),
+    );
+    stats.add_me_fair_downstream_stalls_total(
+        current
+            .downstream_stalls
+            .saturating_sub(prev.downstream_stalls),
+    );
+    *prev = current;
+}
+
+async fn drain_fairness_scheduler(
+    fairness: &mut WorkerFairnessState,
+    reg: &ConnRegistry,
+    tx: &mpsc::Sender<WriterCommand>,
+    data_route_queue_full_streak: &mut HashMap<u64, u8>,
+    route_wait_ms: u64,
+    stats: &Stats,
+) {
+    for _ in 0..FAIRNESS_DRAIN_BUDGET_PER_LOOP {
+        let now = Instant::now();
+        let SchedulerDecision::Dispatch(candidate) = fairness.next_decision(now) else {
+            break;
+        };
+        let cid = candidate.frame.conn_id;
+        let _pressure_state = candidate.pressure_state;
+        let _flow_class = candidate.flow_class;
+        let routed = route_data_with_retry(
+            reg,
+            cid,
+            candidate.frame.flags,
+            candidate.frame.data.clone(),
+            route_wait_ms,
+        )
+        .await;
+        if matches!(routed, RouteResult::Routed) {
+            data_route_queue_full_streak.remove(&cid);
+        } else {
+            report_route_drop(routed, stats);
+        }
+        let action = fairness.apply_dispatch_feedback(cid, candidate, route_feedback(routed), now);
+        if is_data_route_queue_full(routed) {
+            let streak = data_route_queue_full_streak.entry(cid).or_insert(0);
+            *streak = streak.saturating_add(1);
+            if should_close_on_queue_full_streak(*streak) {
+                fairness.remove_flow(cid);
+                data_route_queue_full_streak.remove(&cid);
+                reg.unregister(cid).await;
+                send_close_conn(tx, cid).await;
+                continue;
+            }
+        }
+        if action == DispatchAction::CloseFlow || should_close_on_route_result_for_data(routed) {
+            fairness.remove_flow(cid);
+            data_route_queue_full_streak.remove(&cid);
+            reg.unregister(cid).await;
+            send_close_conn(tx, cid).await;
+        }
+    }
+}
+
 pub(crate) async fn reader_loop(
     mut rd: tokio::io::ReadHalf<TcpStream>,
     dk: [u8; 32],
@@ -98,7 +214,21 @@ pub(crate) async fn reader_loop(
     let mut raw = enc_leftover;
     let mut expected_seq: i32 = 0;
     let mut data_route_queue_full_streak = HashMap::<u64, u8>::new();
-
+    let mut fairness = WorkerFairnessState::new(
+        WorkerFairnessConfig {
+            worker_id: (writer_id as u16).saturating_add(1),
+            max_active_flows: reg.route_channel_capacity().saturating_mul(4).max(256),
+            max_total_queued_bytes: (reg.route_channel_capacity() as u64)
+                .saturating_mul(16 * 1024)
+                .max(4 * 1024 * 1024),
+            max_flow_queued_bytes: (reg.route_channel_capacity() as u64)
+                .saturating_mul(2 * 1024)
+                .clamp(64 * 1024, 2 * 1024 * 1024),
+            ..WorkerFairnessConfig::default()
+        },
+        Instant::now(),
+    );
+    let mut fairness_snapshot = fairness.snapshot();
     loop {
         let mut tmp = [0u8; 65_536];
         let n = tokio::select! {
@@ -181,36 +311,20 @@ pub(crate) async fn reader_loop(
                 let data = body.slice(12..);
                 trace!(cid, flags, len = data.len(), "RPC_PROXY_ANS");
 
-                let route_wait_ms = reader_route_data_wait_ms.load(Ordering::Relaxed);
-                let routed =
-                    route_data_with_retry(reg.as_ref(), cid, flags, data, route_wait_ms).await;
-                if matches!(routed, RouteResult::Routed) {
-                    data_route_queue_full_streak.remove(&cid);
-                    continue;
-                }
-                match routed {
-                    RouteResult::NoConn => stats.increment_me_route_drop_no_conn(),
-                    RouteResult::ChannelClosed => stats.increment_me_route_drop_channel_closed(),
-                    RouteResult::QueueFullBase => {
-                        stats.increment_me_route_drop_queue_full();
-                        stats.increment_me_route_drop_queue_full_base();
-                    }
-                    RouteResult::QueueFullHigh => {
-                        stats.increment_me_route_drop_queue_full();
-                        stats.increment_me_route_drop_queue_full_high();
-                    }
-                    RouteResult::Routed => {}
-                }
-                if should_close_on_route_result_for_data(routed) {
-                    data_route_queue_full_streak.remove(&cid);
-                    reg.unregister(cid).await;
-                    send_close_conn(&tx, cid).await;
-                    continue;
-                }
-                if is_data_route_queue_full(routed) {
+                let admission = fairness.enqueue_data(cid, flags, data, Instant::now());
+                if !matches!(admission, AdmissionDecision::Admit) {
+                    stats.increment_me_route_drop_queue_full();
+                    stats.increment_me_route_drop_queue_full_high();
                     let streak = data_route_queue_full_streak.entry(cid).or_insert(0);
                     *streak = streak.saturating_add(1);
-                    if should_close_on_queue_full_streak(*streak) {
+                    if should_close_on_queue_full_streak(*streak)
+                        || matches!(
+                            admission,
+                            AdmissionDecision::RejectSaturated
+                                | AdmissionDecision::RejectStandingFlow
+                        )
+                    {
+                        fairness.remove_flow(cid);
                         data_route_queue_full_streak.remove(&cid);
                         reg.unregister(cid).await;
                         send_close_conn(&tx, cid).await;
@@ -249,12 +363,14 @@ pub(crate) async fn reader_loop(
                 let _ = reg.route_nowait(cid, MeResponse::Close).await;
                 reg.unregister(cid).await;
                 data_route_queue_full_streak.remove(&cid);
+                fairness.remove_flow(cid);
             } else if pt == RPC_CLOSE_CONN_U32 && body.len() >= 8 {
                 let cid = u64::from_le_bytes(body[0..8].try_into().unwrap());
                 debug!(cid, "RPC_CLOSE_CONN from ME");
                 let _ = reg.route_nowait(cid, MeResponse::Close).await;
                 reg.unregister(cid).await;
                 data_route_queue_full_streak.remove(&cid);
+                fairness.remove_flow(cid);
             } else if pt == RPC_PING_U32 && body.len() >= 8 {
                 let ping_id = i64::from_le_bytes(body[0..8].try_into().unwrap());
                 trace!(ping_id, "RPC_PING -> RPC_PONG");
@@ -310,6 +426,19 @@ pub(crate) async fn reader_loop(
                     "Unknown RPC"
                 );
             }
+
+            let route_wait_ms = reader_route_data_wait_ms.load(Ordering::Relaxed);
+            drain_fairness_scheduler(
+                &mut fairness,
+                reg.as_ref(),
+                &tx,
+                &mut data_route_queue_full_streak,
+                route_wait_ms,
+                stats.as_ref(),
+            )
+            .await;
+            let current_snapshot = fairness.snapshot();
+            apply_fairness_metrics_delta(stats.as_ref(), &mut fairness_snapshot, current_snapshot);
         }
     }
 }
