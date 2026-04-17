@@ -1,7 +1,9 @@
 services:
   telemt:
     image: ghcr.io/telemt/telemt:latest
-    build: .
+    build:
+      context: .
+      target: prod
     container_name: telemt
     restart: unless-stopped
     ports:
@@ -28,7 +30,6 @@ services:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
-      - NET_ADMIN
     read_only: true
     security_opt:
       - no-new-privileges:true

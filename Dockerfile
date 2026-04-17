@@ -83,6 +83,32 @@ ENTRYPOINT ["/app/telemt"]
 CMD ["config.toml"]
 
 # ==========================
+# Production Netfilter Profile
+# ==========================
+FROM debian:12-slim AS prod-netfilter
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        conntrack \
+        nftables \
+        iptables; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=minimal /telemt /app/telemt
+COPY config.toml /app/config.toml
+
+EXPOSE 443 9090 9091
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["/app/telemt", "healthcheck", "/app/config.toml", "--mode", "liveness"]
+
+ENTRYPOINT ["/app/telemt"]
+CMD ["config.toml"]
+
+# ==========================
 # Production Distroless on MUSL
 # ==========================
 FROM gcr.io/distroless/static-debian12 AS prod
