@@ -1768,6 +1768,7 @@ pub struct AntiCensorshipConfig {
     pub mask_shape_above_cap_blur_max_bytes: usize,
 
     /// Maximum bytes relayed per direction on unauthenticated masking fallback paths.
+    /// Set to 0 to disable byte cap (unlimited within relay/idle timeouts).
     #[serde(default = "default_mask_relay_max_bytes")]
     pub mask_relay_max_bytes: usize,
 

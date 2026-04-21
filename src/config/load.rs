@@ -640,12 +640,6 @@ impl ProxyConfig {
             ));
         }
 
-        if config.censorship.mask_relay_max_bytes == 0 {
-            return Err(ProxyError::Config(
-                "censorship.mask_relay_max_bytes must be > 0".to_string(),
-            ));
-        }
-
         if config.censorship.mask_relay_max_bytes > 67_108_864 {
             return Err(ProxyError::Config(
                 "censorship.mask_relay_max_bytes must be <= 67108864".to_string(),

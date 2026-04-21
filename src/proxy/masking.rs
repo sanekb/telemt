@@ -60,21 +60,18 @@ where
     let mut buf = Box::new([0u8; MASK_BUFFER_SIZE]);
     let mut total = 0usize;
     let mut ended_by_eof = false;
-
-    if byte_cap == 0 {
-        return CopyOutcome {
-            total,
-            ended_by_eof,
-        };
-    }
+    let unlimited = byte_cap == 0;
 
     loop {
-        let remaining_budget = byte_cap.saturating_sub(total);
-        if remaining_budget == 0 {
-            break;
-        }
-
-        let read_len = remaining_budget.min(MASK_BUFFER_SIZE);
+        let read_len = if unlimited {
+            MASK_BUFFER_SIZE
+        } else {
+            let remaining_budget = byte_cap.saturating_sub(total);
+            if remaining_budget == 0 {
+                break;
+            }
+            remaining_budget.min(MASK_BUFFER_SIZE)
+        };
         let read_res = timeout(idle_timeout, reader.read(&mut buf[..read_len])).await;
         let n = match read_res {
             Ok(Ok(n)) => n,
@@ -930,21 +927,21 @@ async fn consume_client_data<R: AsyncRead + Unpin>(
     byte_cap: usize,
     idle_timeout: Duration,
 ) {
-    if byte_cap == 0 {
-        return;
-    }
-
     // Keep drain path fail-closed under slow-loris stalls.
     let mut buf = Box::new([0u8; MASK_BUFFER_SIZE]);
     let mut total = 0usize;
+    let unlimited = byte_cap == 0;
 
     loop {
-        let remaining_budget = byte_cap.saturating_sub(total);
-        if remaining_budget == 0 {
-            break;
-        }
-
-        let read_len = remaining_budget.min(MASK_BUFFER_SIZE);
+        let read_len = if unlimited {
+            MASK_BUFFER_SIZE
+        } else {
+            let remaining_budget = byte_cap.saturating_sub(total);
+            if remaining_budget == 0 {
+                break;
+            }
+            remaining_budget.min(MASK_BUFFER_SIZE)
+        };
         let n = match timeout(idle_timeout, reader.read(&mut buf[..read_len])).await {
             Ok(Ok(n)) => n,
             Ok(Err(_)) | Err(_) => break,
@@ -955,7 +952,7 @@ async fn consume_client_data<R: AsyncRead + Unpin>(
         }
 
         total = total.saturating_add(n);
-        if total >= byte_cap {
+        if !unlimited && total >= byte_cap {
             break;
         }
     }
