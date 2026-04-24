@@ -436,7 +436,10 @@ fn build_client_hello(
     let session_id = if session_id_len == 0 {
         Vec::new()
     } else if deterministic {
-        deterministic_bytes(&format!("tls-fetch-session:{sni}:{}", profile.as_str()), session_id_len)
+        deterministic_bytes(
+            &format!("tls-fetch-session:{sni}:{}", profile.as_str()),
+            session_id_len,
+        )
     } else {
         rng.bytes(session_id_len)
     };
@@ -1480,17 +1483,13 @@ mod tests {
         out
     }
 
-    async fn capture_rustls_client_hello_record(alpn_protocols: &'static [&'static [u8]]) -> Vec<u8> {
+    async fn capture_rustls_client_hello_record(
+        alpn_protocols: &'static [&'static [u8]],
+    ) -> Vec<u8> {
         let (client, mut server) = tokio::io::duplex(32 * 1024);
         let fetch_task = tokio::spawn(async move {
-            fetch_via_rustls_stream(
-                client,
-                "example.com",
-                "example.com",
-                None,
-                alpn_protocols,
-            )
-            .await
+            fetch_via_rustls_stream(client, "example.com", "example.com", None, alpn_protocols)
+                .await
         });
 
         let mut header = [0u8; 5];
@@ -1507,7 +1506,10 @@ mod tests {
         drop(server);
 
         let result = fetch_task.await.expect("fetch task must join");
-        assert!(result.is_err(), "capture task should end with handshake error");
+        assert!(
+            result.is_err(),
+            "capture task should end with handshake error"
+        );
 
         let mut record = Vec::with_capacity(5 + body_len);
         record.extend_from_slice(&header);
@@ -1685,14 +1687,20 @@ mod tests {
             true,
         );
         let parsed = parse_client_hello_for_test(&hello);
-        assert_eq!(parsed.session_id.len(), 32, "modern chrome must use non-empty session id");
+        assert_eq!(
+            parsed.session_id.len(),
+            32,
+            "modern chrome must use non-empty session id"
+        );
 
         let extension_ids = parsed
             .extensions
             .iter()
             .map(|(ext_type, _)| *ext_type)
             .collect::<Vec<_>>();
-        let expected_prefix = [0x0000, 0x000b, 0x000a, 0x0023, 0x000d, 0x002b, 0x002d, 0x0033, 0x0010];
+        let expected_prefix = [
+            0x0000, 0x000b, 0x000a, 0x0023, 0x000d, 0x002b, 0x002d, 0x0033, 0x0010,
+        ];
         assert!(
             extension_ids.as_slice().starts_with(&expected_prefix),
             "unexpected extension order: {extension_ids:?}"
@@ -1713,13 +1721,20 @@ mod tests {
             "key_share payload is too short"
         );
         let entry_len = u16::from_be_bytes([key_share_data[0], key_share_data[1]]) as usize;
-        assert_eq!(entry_len, key_share_data.len() - 2, "key_share list length mismatch");
+        assert_eq!(
+            entry_len,
+            key_share_data.len() - 2,
+            "key_share list length mismatch"
+        );
         let group = u16::from_be_bytes([key_share_data[2], key_share_data[3]]);
         let key_len = u16::from_be_bytes([key_share_data[4], key_share_data[5]]) as usize;
         let key = &key_share_data[6..6 + key_len];
         assert_eq!(group, 0x001d, "key_share group must be x25519");
         assert_eq!(key_len, 32, "x25519 key length must be 32");
-        assert!(key.iter().any(|b| *b != 0), "x25519 key must not be all zero");
+        assert!(
+            key.iter().any(|b| *b != 0),
+            "x25519 key must not be all zero"
+        );
     }
 
     #[test]
