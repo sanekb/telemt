@@ -2329,7 +2329,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     match response {
-        MeResponse::Data { flags, data } => {
+        MeResponse::Data { flags, data, .. } => {
             if batched {
                 trace!(conn_id, bytes = data.len(), flags, "ME->C data (batched)");
             } else {
